@@ -1409,8 +1409,8 @@ void function_cc write_gpio(u32 address, u32 value) {
   write_gpio(address & 0xFF, value)                                           \
 
 #ifdef RETRO_GO
-/* video.cpp: core 1 draws lines late; before palette/VRAM/OAM change, the
-   lines already emulated are drawn with the old contents */
+/* video.cpp: core 1 draws lines late; before palette/VRAM change, the lines
+   already emulated are drawn with the old contents (OAM: per-line copies) */
 extern volatile u32 gbsp_rq, gbsp_rd;
 void gbsp_render_sync(void);
 #ifdef ESP_PLATFORM
@@ -1460,7 +1460,6 @@ extern u32 gbsp_sync_region;
                                                                               \
     case 0x07:                                                                \
       /* OAM RAM */                                                           \
-      video_write_sync(2);                                                    \
       if (type != 8) {                                                        \
         reg[OAM_UPDATED] = 1;                                                 \
         address##type(oam_ram, address & 0x3FF) = eswap##type(value);         \
@@ -2094,8 +2093,9 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   dma_region_type dst_reg1 = dma_region_map[dst_end >> 24];
 
 #ifdef RETRO_GO
-  if ((dst_reg0 >= DMA_REGION_VRAM && dst_reg0 <= DMA_REGION_OAM_RAM) ||
-      (dst_reg1 >= DMA_REGION_VRAM && dst_reg1 <= DMA_REGION_OAM_RAM))
+  /* OAM needs no sync: the renderer reads per-line copies (video.cpp) */
+  if ((dst_reg0 >= DMA_REGION_VRAM && dst_reg0 <= DMA_REGION_PALETTE_RAM) ||
+      (dst_reg1 >= DMA_REGION_VRAM && dst_reg1 <= DMA_REGION_PALETTE_RAM))
     video_write_sync(3);
 #endif
 

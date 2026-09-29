@@ -31,11 +31,22 @@ u16* gba_screen_pixels = NULL;
    registers and affine references taken at that line's hblank (core 0), so
    it can draw on core 1 while core 0 emulates the following lines. */
 #define RLINE_IO 0x30                 /* DISPCNT .. BLDY (u16 index 0x2A) */
-typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u8 oam; } rline_t;
+typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u8 oam, oamb; } rline_t;
+/* OAM as the line saw it: core 0 copies OAM into the other of two buffers at
+   the first line after a change, so the game can rewrite OAM (in the vblank,
+   for the next frame) without waiting for core 1 to draw the last lines */
+#ifdef ESP_PLATFORM
+static u16 (*r_oam)[512];   /* PSRAM: gbsp_render_start() */
+#endif
+static const u16 *render_oam = oam_ram;
+static u8 r_oam_cur;
+static u32 r_oam_last[2] = {~0U, ~0U};   /* index of the last queued line using it */
+static bool r_oam_valid;
 #ifdef ESP_PLATFORM
 static rline_t *rlines;   /* 160 lines, PSRAM (internal RAM is full): gbsp_render_start() */
 #else
 static rline_t rlines_pc[160], *rlines = rlines_pc;
+static u16 r_oam_pc[2][512], (*r_oam)[512] = r_oam_pc;
 #endif
 static const u16 *render_io = io_registers;
 static s32 r_affine_x[2], r_affine_y[2];
@@ -48,6 +59,7 @@ static s32 r_affine_x[2], r_affine_y[2];
 #define live_ioreg32(regnum) read_ioreg32(regnum)
 #define r_affine_x affine_reference_x
 #define r_affine_y affine_reference_y
+#define render_oam oam_ram
 #endif
 #define get_screen_pitch()    GBA_SCREEN_PITCH
 
@@ -1375,7 +1387,7 @@ inline static void render_sprite(
 
   if (is_affine) {
     u32 pnum = (obji->attr1 >> 9) & 0x1f;
-    const t_affp *affp_base = (t_affp*)oam_ram;
+    const t_affp *affp_base = (t_affp*)render_oam;
     const t_affp *affp = &affp_base[pnum];
 
     if (affp->dy == 0)     // No rotation happening (just scale)
@@ -1454,7 +1466,7 @@ void render_scanline_objs(
   for (objn = objcnt-1; objn >= 0; objn--) {
     // Objects in the list are pre-filtered and sorted in the appropriate order
     u32 objoff = objlist[objn];
-    const t_oam *oamentry = &((t_oam*)oam_ram)[objoff];
+    const t_oam *oamentry = &((t_oam*)render_oam)[objoff];
 
     u16 obj_attr0 = eswap16(oamentry->attr0);
     u16 obj_attr1 = eswap16(oamentry->attr1);
@@ -1537,7 +1549,7 @@ static void order_obj(u32 video_mode)
 {
   u32 obj_num;
   u32 row;
-  t_oam *oam_base = (t_oam*)oam_ram;
+  t_oam *oam_base = (t_oam*)render_oam;
   u16 rend_cycles[160];
 
   bool hblank_free = read_ioreg(REG_DISPCNT) & 0x20;
@@ -2318,6 +2330,7 @@ static void render_line(u32 vcount, const rline_t *ls)
   const int64_t gbaprof_t0 = rg_system_timer();
 #endif
   render_io = ls->io;
+  render_oam = r_oam[ls->oamb];
   r_affine_x[0] = ls->ax[0]; r_affine_x[1] = ls->ax[1];
   r_affine_y[0] = ls->ay[0]; r_affine_y[1] = ls->ay[1];
   u16 dispcnt = read_ioreg(REG_DISPCNT);
@@ -2383,7 +2396,8 @@ static void render_task(void *arg)
 extern "C" void gbsp_render_start(void)
 {
   rlines = (rline_t *)heap_caps_malloc(160 * sizeof(rline_t), MALLOC_CAP_SPIRAM);
-  if (!rlines)
+  r_oam = (u16 (*)[512])heap_caps_malloc(2 * sizeof(oam_ram), MALLOC_CAP_SPIRAM);
+  if (!rlines || !r_oam)
     abort();
   /* above retro-go's display task (6) on core 1, so core 0 rarely waits */
   if (xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, 7, &rtask, 1) == pdPASS)
@@ -2472,7 +2486,18 @@ void update_scanline(void)
   memcpy(ls->io, io_registers, sizeof(ls->io));
   ls->ax[0] = affine_reference_x[0]; ls->ax[1] = affine_reference_x[1];
   ls->ay[0] = affine_reference_y[0]; ls->ay[1] = affine_reference_y[1];
-  ls->oam = reg[OAM_UPDATED] ? 1 : 0;
+  ls->oam = reg[OAM_UPDATED] || !r_oam_valid;
+  if (ls->oam)
+  {
+    u32 nb = r_oam_cur ^ 1;
+    if ((s32)(r_oam_last[nb] - gbsp_rd) >= 0)   /* a queued line still reads it */
+      gbsp_render_sync();
+    memcpy(r_oam[nb], oam_ram, sizeof(oam_ram));
+    r_oam_cur = nb;
+    r_oam_valid = true;
+  }
+  ls->oamb = r_oam_cur;
+  r_oam_last[r_oam_cur] = gbsp_rq;   /* this line's queue index */
   reg[OAM_UPDATED] = 0;
   line_ready(vcount);
 
