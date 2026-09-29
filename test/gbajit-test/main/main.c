@@ -122,34 +122,9 @@ static void run(void *arg)
         FILE *fp = fopen("/rom/state", "rb");
         size_t got = b && fp ? fread(b, 1, GBA_STATE_MEM_SIZE, fp) : 0;
         int ok = got == GBA_STATE_MEM_SIZE && gba_load_state(b);
-        if (b)
-        {
-            extern uint32_t esp_rom_crc32_le(uint32_t crc, const uint8_t *buf, uint32_t len);
-            uint8_t t16[16] __attribute__((aligned(4)));
-            esp_partition_read(romfs_part[1], 0, t16, 16);
-            printf("GBAJIT direct read @0 (internal): %02x %02x %02x %02x %02x %02x\n", t16[0], t16[1], t16[2], t16[3], t16[4], t16[5]);
-            uint8_t *ps = heap_caps_malloc(64, MALLOC_CAP_SPIRAM);
-            esp_partition_read(romfs_part[1], 0, ps, 16);
-            printf("GBAJIT direct read @0 (PSRAM %p): %02x %02x %02x %02x %02x %02x\n", ps, ps[0], ps[1], ps[2], ps[3], ps[4], ps[5]);
-            {
-                static const uint32_t fa[] = {0x400000, 0x7FFFFC, 0x800000, 0x900000, 0xBFFFF0, 0xC00000, 0xC00010};
-                for (int i = 0; i < 7; i++)
-                {
-                    uint8_t x[8] __attribute__((aligned(4)));
-                    esp_flash_read(NULL, x, fa[i], 8);
-                    printf("GBAJIT flash @%06lx: %02x %02x %02x %02x %02x %02x %02x %02x\n", (unsigned long)fa[i], x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
-                }
-            }
-            static const int offs[] = {0, 16, 4096, 65536, 65536 + 4096, 200000, 425984 - 16};
-            for (int i = 0; i < 7; i++)
-                printf("GBAJIT state @%d: %02x %02x %02x %02x\n", offs[i], b[offs[i]], b[offs[i] + 1], b[offs[i] + 2], b[offs[i] + 3]);
-            printf("GBAJIT state crc %08lx (first 64 KB %08lx)\n", (unsigned long)esp_rom_crc32_le(0, b, GBA_STATE_MEM_SIZE), (unsigned long)esp_rom_crc32_le(0, b, 65536));
-        }
-        if (!ok && b)
-            printf("GBAJIT checks: cpu %d input %d main %d memory %d sound %d\n", cpu_check_savestate(b), input_check_savestate(b),
+        if (!ok && b)   /* which part of the state was refused */
+            printf("GBAJIT state checks: cpu %d input %d main %d memory %d sound %d\n", cpu_check_savestate(b), input_check_savestate(b),
                    main_check_savestate(b), memory_check_savestate(b), sound_check_savestate(b));
-        printf("GBAJIT state: buffer %p, file %p, read %u of %u, magic %02x%02x%02x%02x\n", b, fp, (unsigned)got,
-               (unsigned)GBA_STATE_MEM_SIZE, b ? b[0] : 0, b ? b[1] : 0, b ? b[2] : 0, b ? b[3] : 0);
         if (fp) fclose(fp);
         free(b);
         printf("GBAJIT state loaded: %d (internal free %u KB, PSRAM free %u KB)\n", ok,
