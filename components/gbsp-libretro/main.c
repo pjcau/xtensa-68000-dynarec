@@ -19,6 +19,9 @@
 
 #include "common.h"
 #include <ctype.h>
+#ifdef RETRO_GO
+void gbsp_render_wait(void);   /* video.cpp: lines drawn on core 1 */
+#endif
 
 timer_type timer[4];
 
@@ -195,6 +198,11 @@ u32 function_cc update_gba(int remaining_cycles)
           u32 i;
           dispstat |= 0x01;
 
+#ifdef RETRO_GO
+          /* the lines drawn on core 1 must be finished before the vblank
+             code rewrites OAM/VRAM/palette (video.cpp) */
+          gbsp_render_wait();
+#endif
           // Reinit affine transformation counters for the next frame
           video_reload_counters();
 
