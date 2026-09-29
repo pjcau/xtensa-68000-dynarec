@@ -1010,8 +1010,16 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
   return allow | alhigh;
 }
 
+#ifdef RETRO_GO
+extern u8 gbsp_pal_dirty;   /* video.cpp: the renderer copies the palette */
+#define gbsp_pal_mark() gbsp_pal_dirty = 1
+#else
+#define gbsp_pal_mark()
+#endif
+
 #define write_palette8(address, value)                                        \
 {                                                                             \
+  gbsp_pal_mark();                                                            \
   u32 aladdr = address & ~1U;                                                 \
   u16 val16 = (value << 8) | value;                                           \
   address16(palette_ram, aladdr) = eswap16(val16);                            \
@@ -1020,6 +1028,7 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 
 #define write_palette16(address, value)                                       \
 {                                                                             \
+  gbsp_pal_mark();                                                            \
   u32 palette_address = address;                                              \
   address16(palette_ram, palette_address) = eswap16(value);                   \
   value = convert_palette(value);                                             \
@@ -1028,6 +1037,7 @@ cpu_alert_type function_cc write_io_register32(u32 address, u32 value)
 
 #define write_palette32(address, value)                                       \
 {                                                                             \
+  gbsp_pal_mark();                                                            \
   u32 palette_address = address;                                              \
   u32 value_high = value >> 16;                                               \
   u32 value_low = value & 0xFFFF;                                             \
@@ -1409,9 +1419,10 @@ void function_cc write_gpio(u32 address, u32 value) {
   write_gpio(address & 0xFF, value)                                           \
 
 #ifdef RETRO_GO
-/* video.cpp: core 1 draws lines late; before palette/VRAM change, the lines
-   already emulated are drawn with the old contents (OAM: per-line copies) */
+/* video.cpp: core 1 draws lines late; before VRAM changes, the lines already
+   emulated are drawn with the old contents (OAM, palette: per-line copies) */
 extern volatile u32 gbsp_rq, gbsp_rd;
+extern u8 gbsp_pal_dirty;
 void gbsp_render_sync(void);
 #ifdef ESP_PLATFORM
 #define video_write_sync(r) do { if (gbsp_rq != gbsp_rd) gbsp_render_sync(); } while (0)
@@ -1444,7 +1455,6 @@ extern u32 gbsp_sync_region;
                                                                               \
     case 0x05:                                                                \
       /* palette RAM */                                                       \
-      video_write_sync(0);                                                    \
       write_palette##type(address & 0x3FF, value);                            \
       break;                                                                  \
                                                                               \
@@ -2093,10 +2103,9 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   dma_region_type dst_reg1 = dma_region_map[dst_end >> 24];
 
 #ifdef RETRO_GO
-  /* OAM needs no sync: the renderer reads per-line copies (video.cpp) */
-  if ((dst_reg0 >= DMA_REGION_VRAM && dst_reg0 <= DMA_REGION_PALETTE_RAM) ||
-      (dst_reg1 >= DMA_REGION_VRAM && dst_reg1 <= DMA_REGION_PALETTE_RAM))
-    video_write_sync(3);
+  /* only VRAM: the renderer reads per-line copies of OAM and palette */
+  if (dst_reg0 == DMA_REGION_VRAM || dst_reg1 == DMA_REGION_VRAM)
+    video_write_sync(1);
 #endif
 
   if (src_reg0 == src_reg1 && dst_reg0 == dst_reg1)

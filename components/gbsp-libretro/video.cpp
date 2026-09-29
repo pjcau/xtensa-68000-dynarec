@@ -31,7 +31,7 @@ u16* gba_screen_pixels = NULL;
    registers and affine references taken at that line's hblank (core 0), so
    it can draw on core 1 while core 0 emulates the following lines. */
 #define RLINE_IO 0x30                 /* DISPCNT .. BLDY (u16 index 0x2A) */
-typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u8 oam, oamb; } rline_t;
+typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u8 oam, oamb, palb; } rline_t;
 /* OAM as the line saw it: core 0 copies OAM into the other of two buffers at
    the first line after a change, so the game can rewrite OAM (in the vblank,
    for the next frame) without waiting for core 1 to draw the last lines */
@@ -42,11 +42,24 @@ static const u16 *render_oam = oam_ram;
 static u8 r_oam_cur;
 static u32 r_oam_last[2] = {~0U, ~0U};   /* index of the last queued line using it */
 static bool r_oam_valid;
+/* the same for the converted palette, four buffers (games change it on
+   several lines of a frame): palette writes set gbsp_pal_dirty (gba_memory.c) */
+#define R_PAL_N 4
+#ifdef ESP_PLATFORM
+static u16 (*r_pal)[512];   /* PSRAM: gbsp_render_start() */
+#endif
+static u16 *const live_pal = palette_ram_converted;
+static const u16 *render_pal = palette_ram_converted;
+static u8 r_pal_cur;
+static u32 r_pal_last[R_PAL_N] = {~0U, ~0U, ~0U, ~0U};
+extern "C" { u8 gbsp_pal_dirty = 1; }
+#define palette_ram_converted render_pal
 #ifdef ESP_PLATFORM
 static rline_t *rlines;   /* 160 lines, PSRAM (internal RAM is full): gbsp_render_start() */
 #else
 static rline_t rlines_pc[160], *rlines = rlines_pc;
 static u16 r_oam_pc[2][512], (*r_oam)[512] = r_oam_pc;
+static u16 r_pal_pc[R_PAL_N][512], (*r_pal)[512] = r_pal_pc;
 #endif
 static const u16 *render_io = io_registers;
 static s32 r_affine_x[2], r_affine_y[2];
@@ -2319,7 +2332,7 @@ static const u8 active_layers[] = {
 };
 
 #ifdef GBAPROF
-extern "C" { int64_t gbaprof_render_us, gbaprof_wait_us; }   /* scanline rendering time, read by gbsp/main/main.c */
+extern "C" { int64_t gbaprof_render_us, gbaprof_wait_us; u32 gbaprof_lag159, gbaprof_syncs, gbaprof_lag80, gbaprof_wakes; }   /* scanline rendering time, read by gbsp/main/main.c */
 #endif
 
 #ifdef RETRO_GO
@@ -2331,6 +2344,7 @@ static void render_line(u32 vcount, const rline_t *ls)
 #endif
   render_io = ls->io;
   render_oam = r_oam[ls->oamb];
+  render_pal = r_pal[ls->palb];
   r_affine_x[0] = ls->ax[0]; r_affine_x[1] = ls->ax[1];
   r_affine_y[0] = ls->ay[0]; r_affine_y[1] = ls->ay[1];
   u16 dispcnt = read_ioreg(REG_DISPCNT);
@@ -2384,6 +2398,9 @@ static void render_task(void *arg)
   for (;;)
   {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#ifdef GBAPROF
+    gbaprof_wakes++;
+#endif
     while (gbsp_rd != gbsp_rq)
     {
       __sync_synchronize();
@@ -2397,7 +2414,8 @@ extern "C" void gbsp_render_start(void)
 {
   rlines = (rline_t *)heap_caps_malloc(160 * sizeof(rline_t), MALLOC_CAP_SPIRAM);
   r_oam = (u16 (*)[512])heap_caps_malloc(2 * sizeof(oam_ram), MALLOC_CAP_SPIRAM);
-  if (!rlines || !r_oam)
+  r_pal = (u16 (*)[512])heap_caps_malloc(R_PAL_N * 512 * sizeof(u16), MALLOC_CAP_SPIRAM);
+  if (!rlines || !r_oam || !r_pal)
     abort();
   /* above retro-go's display task (6) on core 1, so core 0 rarely waits */
   if (xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, 7, &rtask, 1) == pdPASS)
@@ -2411,6 +2429,9 @@ extern "C" void gbsp_render_sync(void)
     return;
 #ifdef GBAPROF
   const int64_t t0 = rg_system_timer();
+#endif
+#ifdef GBAPROF
+  gbaprof_syncs++;
 #endif
   xTaskNotifyGive(rtask);
   while (gbsp_rd != gbsp_rq)
@@ -2431,6 +2452,12 @@ static void line_ready(u32 vcount)
   rq_line[gbsp_rq & 255] = vcount;
   __sync_synchronize();
   gbsp_rq++;
+#ifdef GBAPROF
+  if (vcount == 159)
+    gbaprof_lag159 += gbsp_rq - gbsp_rd;
+  if (vcount == 80)
+    gbaprof_lag80 += gbsp_rq - gbsp_rd;
+#endif
   if ((vcount & 7) == 7 || vcount == 159)
     xTaskNotifyGive(rtask);
 }
@@ -2497,6 +2524,17 @@ void update_scanline(void)
     r_oam_valid = true;
   }
   ls->oamb = r_oam_cur;
+  if (gbsp_pal_dirty)
+  {
+    u32 nb = (r_pal_cur + 1) % R_PAL_N;
+    if ((s32)(r_pal_last[nb] - gbsp_rd) >= 0)
+      gbsp_render_sync();
+    memcpy(r_pal[nb], live_pal, 512 * sizeof(u16));
+    r_pal_cur = nb;
+    gbsp_pal_dirty = 0;
+  }
+  ls->palb = r_pal_cur;
+  r_pal_last[r_pal_cur] = gbsp_rq;
   r_oam_last[r_oam_cur] = gbsp_rq;   /* this line's queue index */
   reg[OAM_UPDATED] = 0;
   line_ready(vcount);
