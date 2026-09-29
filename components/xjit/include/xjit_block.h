@@ -15,9 +15,9 @@
 
 #include "xjit_emit.h"
 
-#define XJB_MAX_LITS   64
-#define XJB_MAX_LABELS 64
-#define XJB_MAX_FIX    128
+#define XJB_MAX_LITS   128
+#define XJB_MAX_LABELS 256
+#define XJB_MAX_FIX    512
 
 typedef enum
 {

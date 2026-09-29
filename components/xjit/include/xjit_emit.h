@@ -86,6 +86,8 @@ static inline void xj_abs(xj_emit_t *e, int ar, int at) { XJ_REG(e, ar); XJ_REG(
 #define XJ_RST2(name, op2) \
     static inline void xj_##name(xj_emit_t *e, int ar, int as, int at) \
     { XJ_REG(e, ar); XJ_REG(e, as); XJ_REG(e, at); xj_rrr(e, op2, 2, ar, as, at, 0); }
+XJ_RST2(saltu, 0x6)   /* ar = as < at (unsigned) ? 1 : 0 */
+XJ_RST2(salt, 0x7)    /* ar = as < at (signed) ? 1 : 0 */
 XJ_RST2(mull, 0x8)
 XJ_RST2(muluh, 0xA)
 XJ_RST2(mulsh, 0xB)

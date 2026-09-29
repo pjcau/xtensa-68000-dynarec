@@ -76,8 +76,8 @@ int main(int argc, char **argv)
 
     static const char *rst0[] = {"and", "or", "xor", "add", "addx2", "addx4", "addx8", "sub", "subx2", "subx4", "subx8"};
     static void (*const rst0f[])(xj_emit_t *, int, int, int) = {xj_and, xj_or, xj_xor, xj_add, xj_addx2, xj_addx4, xj_addx8, xj_sub, xj_subx2, xj_subx4, xj_subx8};
-    static const char *rst2[] = {"mull", "muluh", "mulsh", "quou", "quos", "remu", "rems", "min", "max", "minu", "maxu", "moveqz", "movnez", "movltz", "movgez", "src"};
-    static void (*const rst2f[])(xj_emit_t *, int, int, int) = {xj_mull, xj_muluh, xj_mulsh, xj_quou, xj_quos, xj_remu, xj_rems, xj_min, xj_max, xj_minu, xj_maxu, xj_moveqz, xj_movnez, xj_movltz, xj_movgez, xj_src};
+    static const char *rst2[] = {"saltu", "salt", "mull", "muluh", "mulsh", "quou", "quos", "remu", "rems", "min", "max", "minu", "maxu", "moveqz", "movnez", "movltz", "movgez", "src"};
+    static void (*const rst2f[])(xj_emit_t *, int, int, int) = {xj_saltu, xj_salt, xj_mull, xj_muluh, xj_mulsh, xj_quou, xj_quos, xj_remu, xj_rems, xj_min, xj_max, xj_minu, xj_maxu, xj_moveqz, xj_movnez, xj_movltz, xj_movgez, xj_src};
     static const char *br[] = {"bnone", "beq", "blt", "bltu", "ball", "bbc", "bany", "bne", "bge", "bgeu", "bnall", "bbs"};
     static void (*const brf[])(xj_emit_t *, int, int, int) = {xj_bnone, xj_beq, xj_blt, xj_bltu, xj_ball, xj_bbc, xj_bany, xj_bne, xj_bge, xj_bgeu, xj_bnall, xj_bbs};
     static const char *bz[] = {"beqz", "bnez", "bltz", "bgez"};
@@ -94,7 +94,7 @@ int main(int argc, char **argv)
     {
         int r = reg(), s = reg(), t = reg(), k;
         for (k = 0; k < 11; k++) { begin(); rst0f[k](&E, r, s, t); end("%s a%d, a%d, a%d", rst0[k], r, s, t); r = reg(); s = reg(); t = reg(); }
-        for (k = 0; k < 16; k++) { begin(); rst2f[k](&E, r, s, t); end("%s a%d, a%d, a%d", rst2[k], r, s, t); r = reg(); s = reg(); t = reg(); }
+        for (k = 0; k < 18; k++) { begin(); rst2f[k](&E, r, s, t); end("%s a%d, a%d, a%d", rst2[k], r, s, t); r = reg(); s = reg(); t = reg(); }
         begin(); xj_mov(&E, r, s); end("or a%d, a%d, a%d", r, s, s);
         begin(); xj_neg(&E, r, t); end("neg a%d, a%d", r, t);
         begin(); xj_abs(&E, s, t); end("abs a%d, a%d", s, t);

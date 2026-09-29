@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 #include "xjit_block.h"
 #include "xjit_exec.h"
+#include "thumb.h"
 
 static int tests, passed;
 static void check(const char *name, const char *cache, int ok, const char *detail)
@@ -415,6 +416,54 @@ static void run_blocks(int c)
 }
 
 
+
+/* ---- step 4: Thumb translator against its reference ------------------------ */
+static void run_thumb(int c)
+{
+    static uint16_t code[32];
+    static xj_block_t b;
+    static char d[160];
+    int seqs = 0, fails = 0, untranslated = 0;
+    size_t mark = cache_used[c];
+    for (int n = 0; n < 3000; n++)
+    {
+        int count = 1 + (int)(rnd() % 24);
+        for (int i = 0; i < count; i++)
+            code[i] = thumb_random_op();
+        xjb_init(&b, scratch, sizeof(scratch));
+        if (!thumb_translate(&b, code, count)) { untranslated++; continue; }
+        void (*f)(thumb_state_t *) = install(&b, c);
+        if (!f) { untranslated++; continue; }
+        seqs++;
+        for (int v = 0; v < 6; v++)
+        {
+            thumb_state_t s0, want, got;
+            thumb_random_state(&s0);
+            want = got = s0;
+            thumb_ref(&want, code, count);
+            f(&got);
+            if (memcmp(&want, &got, sizeof(want)))
+            {
+                if (fails++ < 4)
+                {
+                    int k = 0;
+                    while (k < 20 && ((uint32_t *)&want)[k] == ((uint32_t *)&got)[k]) k++;
+                    printf("XJIT thumb diff seq %d (%d ops, first %04x): word %d got %08" PRIx32 " want %08" PRIx32 "\n",
+                           n, count, code[0], k, ((uint32_t *)&got)[k], ((uint32_t *)&want)[k]);
+                    if (count <= 4)
+                        for (int i = 0; i < count; i++) printf("XJIT   op %04x\n", code[i]);
+                }
+                break;
+            }
+        }
+        if (cache_used[c] > caches[c].size - 8192)
+            cache_used[c] = mark;
+    }
+    snprintf(d, sizeof(d), "%d sequences x 6 states, %d failures, %d not translated", seqs, fails, untranslated);
+    check("Thumb vs reference", cache_name[c], fails == 0 && untranslated == 0, d);
+    cache_used[c] = mark;
+}
+
 /* ---- step 3: speed (numbers only mean something on the board) ------------- */
 #define BENCH_OPS 16   /* ALU ops per loop iteration */
 
@@ -585,7 +634,11 @@ void app_main(void)
 
     for (int c = 0; c < 2; c++)
         if (c == 0 ? ok0 : ok1)
+        {
             run_blocks(c);
+            cache_used[c] = 0;
+            run_thumb(c);
+        }
 
     printf("XJIT RESULT %d/%d\n", passed, tests);
 
