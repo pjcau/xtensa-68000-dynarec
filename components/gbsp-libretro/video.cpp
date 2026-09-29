@@ -25,6 +25,30 @@ extern "C" {
 u16* gba_screen_pixels = NULL;
 
 #define get_screen_pixels()   gba_screen_pixels
+
+#ifdef RETRO_GO
+/* esp32-emu-turbo: the scanline renderer reads a snapshot of the display
+   registers and affine references taken at that line's hblank (core 0), so
+   it can draw on core 1 while core 0 emulates the following lines. */
+#define RLINE_IO 0x30                 /* DISPCNT .. BLDY (u16 index 0x2A) */
+typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u8 oam; } rline_t;
+#ifdef ESP_PLATFORM
+static rline_t *rlines;   /* 160 lines, PSRAM (internal RAM is full): gbsp_render_start() */
+#else
+static rline_t rlines_pc[160], *rlines = rlines_pc;
+#endif
+static const u16 *render_io = io_registers;
+static s32 r_affine_x[2], r_affine_y[2];
+#define live_ioreg(regnum) (eswap16(io_registers[(regnum)]))
+#define live_ioreg32(regnum) (live_ioreg(regnum) | (live_ioreg((regnum)+1) << 16))
+#undef read_ioreg
+#define read_ioreg(regnum) (eswap16(render_io[(regnum)]))
+#else
+#define live_ioreg(regnum) read_ioreg(regnum)
+#define live_ioreg32(regnum) read_ioreg32(regnum)
+#define r_affine_x affine_reference_x
+#define r_affine_y affine_reference_y
+#endif
 #define get_screen_pitch()    GBA_SCREEN_PITCH
 
 typedef struct {
@@ -135,10 +159,10 @@ static inline s32 signext28(u32 value)
 void video_reload_counters()
 {
   /* This happens every Vblank */
-  affine_reference_x[0] = signext28(read_ioreg32(REG_BG2X_L));
-  affine_reference_y[0] = signext28(read_ioreg32(REG_BG2Y_L));
-  affine_reference_x[1] = signext28(read_ioreg32(REG_BG3X_L));
-  affine_reference_y[1] = signext28(read_ioreg32(REG_BG3Y_L));
+  affine_reference_x[0] = signext28(live_ioreg32(REG_BG2X_L));
+  affine_reference_y[0] = signext28(live_ioreg32(REG_BG2Y_L));
+  affine_reference_x[1] = signext28(live_ioreg32(REG_BG3X_L));
+  affine_reference_y[1] = signext28(live_ioreg32(REG_BG3Y_L));
 }
 
 // Renders non-affine tiled background layer.
@@ -648,8 +672,8 @@ static inline void render_affine_background(
   s32 dx = (s16)read_ioreg(REG_BGxPA(layer));
   s32 dy = (s16)read_ioreg(REG_BGxPC(layer));
 
-  s32 source_x = affine_reference_x[layer - 2] + (start * dx);
-  s32 source_y = affine_reference_y[layer - 2] + (start * dy);
+  s32 source_x = r_affine_x[layer - 2] + (start * dx);
+  s32 source_y = r_affine_y[layer - 2] + (start * dy);
 
   // Maps are squared, four sizes available (128x128 to 1024x1024)
   u32 width_height = 128 << map_size;
@@ -849,8 +873,8 @@ static inline void render_scanline_bitmap(
 ) {
   s32 dx = (s16)read_ioreg(REG_BG2PA);
   s32 dy = (s16)read_ioreg(REG_BG2PC);
-  s32 source_x = affine_reference_x[0] + (start * dx); // Always BG2
-  s32 source_y = affine_reference_y[0] + (start * dy);
+  s32 source_x = r_affine_x[0] + (start * dx); // Always BG2
+  s32 source_y = r_affine_y[0] + (start * dy);
 
   // Premature abort render optimization if bitmap out of Y coordinate.
   if ((rdmode != ROTATED) && ((u32)(source_y >> 8)) >= height)
@@ -2283,8 +2307,156 @@ static const u8 active_layers[] = {
 };
 
 #ifdef GBAPROF
-extern "C" { int64_t gbaprof_render_us; }   /* scanline rendering, read by gbsp/main/main.c */
+extern "C" { int64_t gbaprof_render_us; }   /* scanline rendering time, read by gbsp/main/main.c */
 #endif
+
+#ifdef RETRO_GO
+/* draws one line from its snapshot (core 1 on the board, inline on the PC) */
+static void render_line(u32 vcount, const rline_t *ls)
+{
+#ifdef GBAPROF
+  const int64_t gbaprof_t0 = rg_system_timer();
+#endif
+  render_io = ls->io;
+  r_affine_x[0] = ls->ax[0]; r_affine_x[1] = ls->ax[1];
+  r_affine_y[0] = ls->ay[0]; r_affine_y[1] = ls->ay[1];
+  u16 dispcnt = read_ioreg(REG_DISPCNT);
+  u16 *screen_offset = get_screen_pixels() + (vcount * get_screen_pitch());
+  u32 video_mode = dispcnt & 0x07;
+
+  // If OAM has been modified since the last scanline has been updated then
+  // reorder and reprofile the OBJ lists.
+  if(ls->oam)
+    order_obj(video_mode);
+
+  order_layers((dispcnt >> 8) & active_layers[video_mode], vcount);
+
+  // If the screen is in in forced blank draw pure white.
+  if(dispcnt & 0x80)
+    memset(screen_offset, 0xff, 240*sizeof(u16));
+  else
+    render_scanline_window(screen_offset);
+#ifdef GBAPROF
+  gbaprof_render_us += rg_system_timer() - gbaprof_t0;
+#endif
+}
+
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include <esp_heap_caps.h>
+extern "C" { int gbsp_render_core1; }
+static TaskHandle_t rtask;
+static SemaphoreHandle_t rframe_done;
+static volatile u32 rlines_ready, rframe_seq;
+
+static void render_task(void *arg)
+{
+  u32 seq = 0, done = 0;
+  for (;;)
+  {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    for (;;)
+    {
+      if (seq != rframe_seq) { seq = rframe_seq; done = 0; }
+      u32 ready = rlines_ready;
+      __sync_synchronize();
+      if (done >= ready)
+        break;
+      while (done < ready)
+      {
+        render_line(done, &rlines[done]);
+        done++;
+      }
+      if (done == 160)
+        xSemaphoreGive(rframe_done);
+    }
+  }
+}
+
+/* core 0: start the line renderer on core 1 */
+extern "C" void gbsp_render_start(void)
+{
+  rlines = (rline_t *)heap_caps_malloc(160 * sizeof(rline_t), MALLOC_CAP_SPIRAM);
+  if (!rlines)
+    abort();
+  rframe_done = xSemaphoreCreateBinary();
+  if (rframe_done && xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, 5, &rtask, 1) == pdPASS)
+    gbsp_render_core1 = 1;
+}
+
+/* core 0, before the frame goes to the display: the last lines are drawn */
+extern "C" void gbsp_render_wait(void)
+{
+  if (gbsp_render_core1)
+    xSemaphoreTake(rframe_done, portMAX_DELAY);
+}
+
+static void line_ready(u32 vcount)
+{
+  if (!gbsp_render_core1)
+  {
+    render_line(vcount, &rlines[vcount]);
+    return;
+  }
+  __sync_synchronize();
+  if (vcount == 0)
+    rframe_seq++;
+  rlines_ready = vcount + 1;
+  if ((vcount & 7) == 7 || vcount == 159)
+    xTaskNotifyGive(rtask);
+}
+#else
+extern "C" void gbsp_render_start(void) {}
+extern "C" void gbsp_render_wait(void) {}
+static void line_ready(u32 vcount) { render_line(vcount, &rlines[vcount]); }
+#endif
+
+void update_scanline(void)
+{
+  u16 dispcnt = live_ioreg(REG_DISPCNT);
+  u32 vcount = live_ioreg(REG_VCOUNT);
+  u32 video_mode = dispcnt & 0x07;
+
+  if(skip_next_frame)
+    return;
+
+  rline_t *ls = &rlines[vcount];
+  memcpy(ls->io, io_registers, sizeof(ls->io));
+  ls->ax[0] = affine_reference_x[0]; ls->ax[1] = affine_reference_x[1];
+  ls->ay[0] = affine_reference_y[0]; ls->ay[1] = affine_reference_y[1];
+  ls->oam = reg[OAM_UPDATED] ? 1 : 0;
+  reg[OAM_UPDATED] = 0;
+  line_ready(vcount);
+
+  // Mode 0 does not use any affine params at all.
+  if (video_mode) {
+    // Account for vertical mosaic effect, by correcting affine references.
+    const u32 bgmosv = ((live_ioreg(REG_MOSAIC) >> 4) & 0xF) + 1;
+
+    if (live_ioreg(REG_BG2CNT) & 0x40) {   // Mosaic enabled for this BG
+      if ((vcount % bgmosv) == bgmosv-1) { // Correct after the last line
+        affine_reference_x[0] += (s16)live_ioreg(REG_BG2PB) * bgmosv;
+        affine_reference_y[0] += (s16)live_ioreg(REG_BG2PD) * bgmosv;
+      }
+    } else {
+      affine_reference_x[0] += (s16)live_ioreg(REG_BG2PB);
+      affine_reference_y[0] += (s16)live_ioreg(REG_BG2PD);
+    }
+
+    if (live_ioreg(REG_BG3CNT) & 0x40) {
+      if ((vcount % bgmosv) == bgmosv-1) {
+        affine_reference_x[1] += (s16)live_ioreg(REG_BG3PB) * bgmosv;
+        affine_reference_y[1] += (s16)live_ioreg(REG_BG3PD) * bgmosv;
+      }
+    } else {
+      affine_reference_x[1] += (s16)live_ioreg(REG_BG3PB);
+      affine_reference_y[1] += (s16)live_ioreg(REG_BG3PD);
+    }
+  }
+}
+#else
 void update_scanline(void)
 {
   u32 pitch = get_screen_pitch();
@@ -2344,5 +2516,6 @@ void update_scanline(void)
   gbaprof_render_us += rg_system_timer() - gbaprof_t0;
 #endif
 }
+#endif
 
 
