@@ -253,6 +253,10 @@ void init_gamepak_buffer(void);
 bool gamepak_must_swap(void);
 void memory_term(void);
 u8 *load_gamepak_page(u32 physical_index);
+#ifdef RETRO_GO
+u8 *gamepak_borrow_block(void);
+void gamepak_return_block(void);
+#endif
 
 extern u32 oam_update;
 extern u32 gbc_sound_wave_update;
@@ -344,7 +348,8 @@ typedef struct
   // TODO: Evaluate what is best left in internal memory for performance reasons (for the few that could fit)
   u8 vram[1024 * 96];
   u8 ewram[(1024 * 256) << SMC_DETECTION];
-  u8 iwram[(1024 * 32) << SMC_DETECTION];
+  // iwram: a static array in internal RAM (cpu.cpp) -- the game's stack and
+  // its fastest code live there, PSRAM made every push/pop a cache risk
   // u8 *memory_map_read[8 * 1024];
   u8 gamepak_backup[1024 * 128];
   // There's also stuff from video.cpp to consider:
@@ -356,7 +361,6 @@ typedef struct
 extern gbsp_memory_t *gbsp_memory;
 #define vram gbsp_memory->vram
 #define ewram gbsp_memory->ewram
-#define iwram gbsp_memory->iwram
 // #define memory_map_read gbsp_memory->memory_map_read
 #define gamepak_backup gbsp_memory->gamepak_backup
 #endif

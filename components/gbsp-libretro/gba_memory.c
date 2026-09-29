@@ -2191,6 +2191,9 @@ u8 *load_gamepak_page(u32 physical_index)
   if(physical_index >= (gamepak_size >> 15))
     return &gamepak_buffers[0][0];
 
+#ifdef GBAPROF
+  { extern u32 gbaprof_pageloads; gbaprof_pageloads++; }
+#endif
   u32 entry = evict_gamepak_page();
   u32 block_idx = entry / 32;
   u32 block_off = entry % 32;
@@ -2211,6 +2214,45 @@ u8 *load_gamepak_page(u32 physical_index)
 
   return swap_location;
 }
+
+#ifdef RETRO_GO
+/* Save states need a 416 KB buffer and the ROM cache leaves less PSRAM than
+   that (an 8 MB ROM): lend the last 1 MB block of the ROM cache instead. Its
+   ROM pages are unmapped while it is lent, and read back from the card and
+   mapped again when it is returned. Only between frames (execute_arm not
+   running). */
+u8 *gamepak_borrow_block(void)
+{
+  u32 idx, j;
+  if (!gamepak_buffer_count || !gamepak_file_large)
+    return NULL;
+  idx = gamepak_buffer_count - 1;
+  for (j = 0; j < 32; j++)
+  {
+    s32 phy = gamepak_blk_queue[idx * 32 + j].phy_rom;
+    if (phy >= 0)
+      map_rom_entry(read, phy, NULL, gamepak_size >> 15);
+  }
+  return gamepak_buffers[idx];
+}
+
+void gamepak_return_block(void)
+{
+  u32 idx = gamepak_buffer_count - 1, j;
+  for (j = 0; j < 32; j++)
+  {
+    s32 phy = gamepak_blk_queue[idx * 32 + j].phy_rom;
+    u8 *slot = &gamepak_buffers[idx][32 * 1024 * j];
+    if (phy < 0)
+      continue;
+    fseek(gamepak_file_large, phy * (32 * 1024), SEEK_SET);
+    fread(slot, 32 * 1024, 1, gamepak_file_large);
+    map_rom_entry(read, phy, slot, gamepak_size >> 15);
+    if (phy == 0)
+      update_gpio_romregs();
+  }
+}
+#endif
 
 void init_gamepak_buffer(void)
 {

@@ -2282,6 +2282,9 @@ static const u8 active_layers[] = {
   0,
 };
 
+#ifdef GBAPROF
+extern "C" { int64_t gbaprof_render_us; }   /* scanline rendering, read by gbsp/main/main.c */
+#endif
 void update_scanline(void)
 {
   u32 pitch = get_screen_pitch();
@@ -2292,6 +2295,9 @@ void update_scanline(void)
 
   if(skip_next_frame)
     return;
+#ifdef GBAPROF
+  const int64_t gbaprof_t0 = rg_system_timer();
+#endif
 
   // If OAM has been modified since the last scanline has been updated then
   // reorder and reprofile the OBJ lists.
@@ -2334,6 +2340,9 @@ void update_scanline(void)
       affine_reference_y[1] += (s16)read_ioreg(REG_BG3PD);
     }
   }
+#ifdef GBAPROF
+  gbaprof_render_us += rg_system_timer() - gbaprof_t0;
+#endif
 }
 
 

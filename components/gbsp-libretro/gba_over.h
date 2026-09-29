@@ -1,5 +1,16 @@
 static const ini_t gbaover[] = {
    {
+      // Sonic Advance (U) -- esp32-emu-turbo: VBlank spin at 0x800096c (31% of the level's instructions)
+      "SONICADVANCE",              /* gamepak_title        */
+      "ASOE",                      /* gamepak_code         */
+      "78",                        /* gamepak_maker        */
+      0,                           /* flags                */
+      0x800096c,                   /* idle_loop_target_pc  */
+      0,                           /* translation_gate_target_1 */
+      0,                           /* translation_gate_target_2 */
+      0,                           /* translation_gate_target_3 */
+   },
+   {
       // 007 - Nightfire (U)
       "NIGHTFIRE",                 /* gamepak_title        */
       "A7OE",                      /* gamepak_code         */
@@ -1044,6 +1055,17 @@ static const ini_t gbaover[] = {
       "08",                        /* gamepak_maker        */
       0,                           /* flags                */
       0x800090c,                   /* idle_loop_target_pc  */
+      0,                           /* translation_gate_target_1 */
+      0,                           /* translation_gate_target_2 */
+      0,                           /* translation_gate_target_3 */
+   },
+   {
+      // Metal Slug Advance (E) -- esp32-emu-turbo: same loop as (U), found with the PC histogram
+      "AGB-BSMP",                  /* gamepak_title        */
+      "BSMP",                      /* gamepak_code         */
+      "7U",                        /* gamepak_maker        */
+      0,                           /* flags                */
+      0x8000298,                   /* idle_loop_target_pc  */
       0,                           /* translation_gate_target_1 */
       0,                           /* translation_gate_target_2 */
       0,                           /* translation_gate_target_3 */

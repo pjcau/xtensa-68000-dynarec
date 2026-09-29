@@ -789,6 +789,7 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
   reg[rd] = psr_reg                                                           \
 
 #define arm_psr_store_cpsr(source)                                            \
+  collapse_flags();                                                           \
   const u32 store_mask = cpsr_masks[psr_pfield][PRIVMODE(reg[CPU_MODE])];     \
   reg[REG_CPSR] = (source & store_mask) | (reg[REG_CPSR] & (~store_mask));    \
   extract_flags();                                                            \
@@ -862,6 +863,23 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
   }                                                                           \
 }                                                                             \
 
+/* Work RAM stores (the stack, most game data) straight into the arrays, as
+   write_memory##size does for regions 2 and 3; everything else (I/O,
+   palette, VRAM, OAM, save chips) through the handlers. Without the dynarec
+   there is no self-modifying-code tracking to update. */
+#if SMC_DETECTION
+#define fast_write_ram(size, _address, value)                                 \
+  cpu_alert |= write_memory##size(_address, value);
+#else
+#define fast_write_ram(size, _address, value)                                 \
+  if ((_address >> 24) == 0x02)                                               \
+    address##size(ewram, (_address & 0x3FFFF)) = eswap##size(value);          \
+  else if ((_address >> 24) == 0x03)                                          \
+    address##size(iwram, (_address & 0x7FFF)) = eswap##size(value);           \
+  else                                                                        \
+    cpu_alert |= write_memory##size(_address, value);
+#endif
+
 #define fast_write_memory(size, type, address, value)                         \
 {                                                                             \
   u32 _address = (address) & ~(aligned_address_mask##size & 0x03);            \
@@ -872,7 +890,7 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
     STATS_MEMORY_ACCESS(write, type, region);                                 \
   }                                                                           \
                                                                               \
-  cpu_alert |= write_memory##size(_address, value);                           \
+  fast_write_ram(size, _address, value)                                       \
 }                                                                             \
 
 #define load_aligned32(address, dest)                                         \
@@ -906,7 +924,7 @@ const u32 spsr_masks[4] = { 0x00000000, 0x000000EF, 0xF0000000, 0xF00000EF };
     cycles_remaining -= ws_cyc_seq[region][1];                                \
     STATS_MEMORY_ACCESS(write, u32, region);                                  \
   }                                                                           \
-  cpu_alert |= write_memory32(_address, value);                               \
+  fast_write_ram(32, _address, value)                                         \
 }                                                                             \
 
 #define load_memory_u8(address, dest)                                         \
@@ -1455,11 +1473,48 @@ u16 palette_ram[512];
 u16 palette_ram_converted[512];
 #ifndef RETRO_GO
 u8 ewram[(1024 * 256) << SMC_DETECTION];
-u8 iwram[(1024 * 32) << SMC_DETECTION];
 u8 vram[1024 * 96];
 #endif
+u8 iwram[(1024 * 32) << SMC_DETECTION];
 u8 *memory_map_read[8 * 1024];
 u16 io_registers[512];
+#endif
+
+#ifdef GBAPROF
+extern "C" { u32 gbaprof_instr; }
+#define GBAPROF_COUNT() gbaprof_instr++
+#else
+#define GBAPROF_COUNT()
+#endif
+
+#ifdef PCHIST
+/* PC harness only: how often each PC executes (finding idle loops) */
+#define PCHIST_SIZE (1 << 16)
+static struct { u32 pc, n; } pchist[PCHIST_SIZE];
+static inline void pchist_add(u32 pc)
+{
+  u32 h = (pc * 2654435761u) >> 16;
+  while (pchist[h].n && pchist[h].pc != pc)
+    h = (h + 1) & (PCHIST_SIZE - 1);
+  pchist[h].pc = pc;
+  pchist[h].n++;
+}
+extern "C" void pchist_dump(int top)
+{
+  u64 total = 0;
+  for (int i = 0; i < PCHIST_SIZE; i++) total += pchist[i].n;
+  for (int k = 0; k < top; k++) {
+    int best = -1;
+    for (int i = 0; i < PCHIST_SIZE; i++)
+      if (pchist[i].n && (best < 0 || pchist[i].n > pchist[best].n)) best = i;
+    if (best < 0) break;
+    printf("PCHIST %08x %10u %5.2f%%\n", pchist[best].pc, pchist[best].n, 100.0 * pchist[best].n / total);
+    pchist[best].n = 0;
+  }
+}
+#define PCHIST_ADD() pchist_add(reg[REG_PC])
+#else
+#define PCHIST_ADD()
 #endif
 
 IRAM_ATTR void execute_arm(u32 cycles)
@@ -1500,14 +1555,21 @@ IRAM_ATTR void execute_arm(u32 cycles)
     {
 arm_loop:
 
+#ifndef RETRO_GO
        collapse_flags();
 
        /* Process cheats if we are about to execute the cheat hook */
        if (reg[REG_PC] == cheat_master_hook)
           process_cheats();
+#endif
+       /* RETRO_GO: no cheats, and the flags live in n/z/c/v_flag: CPSR is
+          rebuilt only where it is read (MRS, MSR, SWI, loop exits, which
+          already collapse), not before every instruction */
 
        /* Execute ARM instruction */
        using_instruction(arm);
+       PCHIST_ADD();
+       GBAPROF_COUNT();
        check_pc_region();
        reg[REG_PC] &= ~0x03;
        opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
@@ -3063,15 +3125,22 @@ skip_instruction:
     {
 thumb_loop:
 
+#ifndef RETRO_GO
        collapse_flags();
 
        /* Process cheats if we are about to execute the cheat hook */
        if (reg[REG_PC] == cheat_master_hook)
           process_cheats();
+#endif
+       /* RETRO_GO: no cheats, and the flags live in n/z/c/v_flag: CPSR is
+          rebuilt only where it is read (MRS, MSR, SWI, loop exits, which
+          already collapse), not before every instruction */
 
        /* Execute THUMB instruction */
 
        using_instruction(thumb);
+       PCHIST_ADD();
+       GBAPROF_COUNT();
        check_pc_region();
        reg[REG_PC] &= ~0x01;
        opcode = readaddress16(pc_address_block, (reg[REG_PC] & 0x7FFF));
