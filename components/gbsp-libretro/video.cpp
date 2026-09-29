@@ -2341,37 +2341,40 @@ static void render_line(u32 vcount, const rline_t *ls)
 #endif
 }
 
+/* Lines queued by core 0 (gbsp_rq) and drawn (gbsp_rd), both counting up;
+   rq_line[] holds each queued line's vcount. Core 0 calls gbsp_render_sync()
+   before any write to palette, VRAM or OAM while lines are outstanding
+   (gba_memory.c) and at the end of the frame, so every line is drawn with the
+   video memory it had when it was emulated, however late core 1 draws it:
+   games rewrite OAM/VRAM/palette in the vblank for the next frame (TMNT's
+   turtles came out half transparent when core 1 drew the last lines after). */
+extern "C" { volatile u32 gbsp_rq, gbsp_rd; }
+static u8 rq_line[256];
+
+static inline void render_next(void)
+{
+  u32 line = rq_line[gbsp_rd & 255];
+  render_line(line, &rlines[line]);
+  __sync_synchronize();
+  gbsp_rd++;
+}
+
 #ifdef ESP_PLATFORM
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/semphr.h>
 #include <esp_heap_caps.h>
 extern "C" { int gbsp_render_core1; }
 static TaskHandle_t rtask;
-static SemaphoreHandle_t rframe_done;
-static volatile u32 rlines_ready, rframe_seq;
-static bool rframe_pending;   /* core 0: line 159 queued, not yet waited for */
 
 static void render_task(void *arg)
 {
-  u32 seq = 0, done = 0;
   for (;;)
   {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    for (;;)
+    while (gbsp_rd != gbsp_rq)
     {
-      if (seq != rframe_seq) { seq = rframe_seq; done = 0; }
-      u32 ready = rlines_ready;
       __sync_synchronize();
-      if (done >= ready)
-        break;
-      while (done < ready)
-      {
-        render_line(done, &rlines[done]);
-        done++;
-      }
-      if (done == 160)
-        xSemaphoreGive(rframe_done);
+      render_next();
     }
   }
 }
@@ -2382,31 +2385,26 @@ extern "C" void gbsp_render_start(void)
   rlines = (rline_t *)heap_caps_malloc(160 * sizeof(rline_t), MALLOC_CAP_SPIRAM);
   if (!rlines)
     abort();
-  rframe_done = xSemaphoreCreateBinary();
-  /* above retro-go's display task (6) on core 1: a renderer starved by the
-     display falls behind into the vblank, where the game rewrites OAM/VRAM */
-  if (rframe_done && xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, 7, &rtask, 1) == pdPASS)
+  /* above retro-go's display task (6) on core 1, so core 0 rarely waits */
+  if (xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, 7, &rtask, 1) == pdPASS)
     gbsp_render_core1 = 1;
 }
 
-/* core 0, at the start of the vblank (gba main.c) and before the frame goes
-   to the display: every line is drawn. It must happen before the vblank is
-   emulated: games rewrite OAM, VRAM and palette there for the next frame, and
-   lines drawn after that show the next frame's sprites (TMNT's turtles half
-   transparent). */
-extern "C" void gbsp_render_wait(void)
+/* core 0: wait until core 1 has drawn every queued line */
+extern "C" void gbsp_render_sync(void)
 {
-  if (gbsp_render_core1 && rframe_pending)
-  {
+  if (gbsp_rd == gbsp_rq)
+    return;
 #ifdef GBAPROF
-    const int64_t t0 = rg_system_timer();
+  const int64_t t0 = rg_system_timer();
 #endif
-    xSemaphoreTake(rframe_done, portMAX_DELAY);
-    rframe_pending = false;
+  xTaskNotifyGive(rtask);
+  while (gbsp_rd != gbsp_rq)
+    ;
+  __sync_synchronize();
 #ifdef GBAPROF
-    gbaprof_wait_us += rg_system_timer() - t0;
+  gbaprof_wait_us += rg_system_timer() - t0;
 #endif
-  }
 }
 
 static void line_ready(u32 vcount)
@@ -2416,31 +2414,50 @@ static void line_ready(u32 vcount)
     render_line(vcount, &rlines[vcount]);
     return;
   }
+  rq_line[gbsp_rq & 255] = vcount;
   __sync_synchronize();
-  if (vcount == 0)
-    rframe_seq++;
-  rlines_ready = vcount + 1;
-  if (vcount == 159)
-    rframe_pending = true;
+  gbsp_rq++;
   if ((vcount & 7) == 7 || vcount == 159)
     xTaskNotifyGive(rtask);
 }
 #else
 extern "C" void gbsp_render_start(void) {}
-extern "C" void gbsp_render_wait(void) {}
-/* PC harness: RLAG=n draws each line n lines late, like core 1 on the board */
-static void line_ready(u32 vcount)
+/* PC harness: RLAG=n draws each line n lines late (and the frame's last
+   ones only at the next sync), like core 1 on the board */
+static int rlag = -1;
+#include <stdio.h>
+static u32 syncstat[4][232];   /* SYNCSTAT: syncs with lines outstanding, by region and vcount */
+extern "C" u32 gbsp_sync_region;
+u32 gbsp_sync_region;
+static void syncstat_dump(void)
 {
-  static int lag = -1;
-  static u32 next;
-  if (lag < 0) lag = getenv("RLAG") ? atoi(getenv("RLAG")) : 0;
-  if (vcount == 0) next = 0;
-  while (next + lag <= vcount || (vcount == 159 && next <= 159)) {
-    render_line(next, &rlines[next]);
-    next++;
+  static const char *n[4] = {"pal", "vram", "oam", "dma/end"};
+  for (int r = 0; r < 4; r++) {
+    u32 t = 0; for (int v = 0; v < 232; v++) t += syncstat[r][v];
+    printf("SYNC %s total %u:", n[r], t);
+    for (int v = 0; v < 232; v++) if (syncstat[r][v]) printf(" %d:%u", v, syncstat[r][v]);
+    printf("\n");
   }
 }
+extern "C" void gbsp_render_sync(void)
+{
+  static int init;
+  if (!init) { init = 1; if (getenv("SYNCSTAT")) atexit(syncstat_dump); }
+  if (gbsp_rd != gbsp_rq) syncstat[gbsp_sync_region & 3][live_ioreg(REG_VCOUNT) % 232]++;
+  gbsp_sync_region = 3;
+  while (gbsp_rd != gbsp_rq)
+    render_next();
+}
+static void line_ready(u32 vcount)
+{
+  if (rlag < 0) rlag = getenv("RLAG") ? atoi(getenv("RLAG")) : 0;
+  rq_line[gbsp_rq & 255] = vcount;
+  gbsp_rq++;
+  while (gbsp_rq - gbsp_rd > (u32)rlag)
+    render_next();
+}
 #endif
+extern "C" void gbsp_render_wait(void) { gbsp_render_sync(); }
 
 void update_scanline(void)
 {

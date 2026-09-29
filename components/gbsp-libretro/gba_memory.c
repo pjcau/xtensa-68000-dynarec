@@ -1408,6 +1408,21 @@ void function_cc write_gpio(u32 address, u32 value) {
 #define write_gpio16()                                                        \
   write_gpio(address & 0xFF, value)                                           \
 
+#ifdef RETRO_GO
+/* video.cpp: core 1 draws lines late; before palette/VRAM/OAM change, the
+   lines already emulated are drawn with the old contents */
+extern volatile u32 gbsp_rq, gbsp_rd;
+void gbsp_render_sync(void);
+#ifdef ESP_PLATFORM
+#define video_write_sync(r) do { if (gbsp_rq != gbsp_rd) gbsp_render_sync(); } while (0)
+#else
+extern u32 gbsp_sync_region;
+#define video_write_sync(r) do { if (gbsp_rq != gbsp_rd) { gbsp_sync_region = r; gbsp_render_sync(); } } while (0)
+#endif
+#else
+#define video_write_sync(r)
+#endif
+
 #define write_gpio32()                                                        \
 
 #define write_memory(type)                                                    \
@@ -1429,11 +1444,13 @@ void function_cc write_gpio(u32 address, u32 value) {
                                                                               \
     case 0x05:                                                                \
       /* palette RAM */                                                       \
+      video_write_sync(0);                                                    \
       write_palette##type(address & 0x3FF, value);                            \
       break;                                                                  \
                                                                               \
     case 0x06:                                                                \
       /* VRAM */                                                              \
+      video_write_sync(1);                                                    \
       address &= 0x1FFFF;                                                     \
       if(address >= 0x18000)                                                  \
         address -= 0x8000;                                                    \
@@ -1443,6 +1460,7 @@ void function_cc write_gpio(u32 address, u32 value) {
                                                                               \
     case 0x07:                                                                \
       /* OAM RAM */                                                           \
+      video_write_sync(2);                                                    \
       if (type != 8) {                                                        \
         reg[OAM_UPDATED] = 1;                                                 \
         address##type(oam_ram, address & 0x3FF) = eswap##type(value);         \
@@ -2074,6 +2092,12 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
   dma_region_type src_reg1 = dma_region_map[src_end >> 24];
   dma_region_type dst_reg0 = dma_region_map[dst_ptr >> 24];
   dma_region_type dst_reg1 = dma_region_map[dst_end >> 24];
+
+#ifdef RETRO_GO
+  if ((dst_reg0 >= DMA_REGION_VRAM && dst_reg0 <= DMA_REGION_OAM_RAM) ||
+      (dst_reg1 >= DMA_REGION_VRAM && dst_reg1 <= DMA_REGION_OAM_RAM))
+    video_write_sync(3);
+#endif
 
   if (src_reg0 == src_reg1 && dst_reg0 == dst_reg1)
     ret = dma_transfer_copy(dmach, src_ptr, dst_ptr, byte_length >> tfsizes);

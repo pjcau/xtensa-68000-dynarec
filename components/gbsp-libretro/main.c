@@ -20,7 +20,7 @@
 #include "common.h"
 #include <ctype.h>
 #ifdef RETRO_GO
-void gbsp_render_wait(void);   /* video.cpp: lines drawn on core 1 */
+void gbsp_render_sync(void);   /* video.cpp: lines drawn on core 1 */
 #endif
 
 timer_type timer[4];
@@ -198,11 +198,6 @@ u32 function_cc update_gba(int remaining_cycles)
           u32 i;
           dispstat |= 0x01;
 
-#ifdef RETRO_GO
-          /* the lines drawn on core 1 must be finished before the vblank
-             code rewrites OAM/VRAM/palette (video.cpp) */
-          gbsp_render_wait();
-#endif
           // Reinit affine transformation counters for the next frame
           video_reload_counters();
 
@@ -240,6 +235,9 @@ u32 function_cc update_gba(int remaining_cycles)
           // Force audio generation. Need to flush samples for this frame.
           render_gbc_sound();
 
+#ifdef RETRO_GO
+          gbsp_render_sync();   /* every line of the frame drawn (video.cpp) */
+#endif
           // We completed a frame, tell the dynarec to exit to the main thread
           frame_complete = 0x80000000;
           frame_counter++;
