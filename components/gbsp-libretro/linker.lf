@@ -1,7 +1,0 @@
-# esp32-emu-turbo: the interpreter's switch jump tables and lookup tables in
-# internal RAM (they are read on every emulated instruction; in flash they go
-# through the data cache the ROM, EWRAM and VRAM in PSRAM keep evicting)
-[mapping:gbsp_libretro]
-archive: libgbsp-libretro.a
-entries:
-    cpu (noflash_data)

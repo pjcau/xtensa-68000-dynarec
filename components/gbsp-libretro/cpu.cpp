@@ -1517,6 +1517,10 @@ extern "C" void pchist_dump(int top)
 #define PCHIST_ADD()
 #endif
 
+#ifdef RETRO_GO
+#include "m4a_hle.h"
+#endif
+
 IRAM_ATTR void execute_arm(u32 cycles)
 {
   u32 opcode;
@@ -1534,6 +1538,9 @@ IRAM_ATTR void execute_arm(u32 cycles)
   touch_gamepak_page(pc_region);
 
   cycles_remaining = cycles;
+#ifdef RETRO_GO
+  m4a_check();
+#endif
   while(1)
   {
     /* Do not execute until CPU is active */
@@ -1572,6 +1579,18 @@ arm_loop:
        GBAPROF_COUNT();
        check_pc_region();
        reg[REG_PC] &= ~0x03;
+#ifdef RETRO_GO
+       /* the m4a mixer loop, natively (m4a_hle.h) */
+       if (reg[REG_PC] == m4a_pc_out || reg[REG_PC] == m4a_pc_in)
+       {
+         u32 hle_pc = reg[REG_PC];
+         if (m4a_run(hle_pc, cycles_remaining, n_flag, z_flag, c_flag, v_flag))
+         {
+           reg[REG_PC] = hle_pc;
+           goto arm_hle_done;
+         }
+       }
+#endif
        opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
        condition = opcode >> 28;
 
@@ -3111,6 +3130,10 @@ skip_instruction:
 
        if (cpu_alert & (CPU_ALERT_HALT | CPU_ALERT_IRQ))
          goto alert;
+#ifdef RETRO_GO
+arm_hle_done:
+       ;
+#endif
 
     } while(cycles_remaining > 0);
 
