@@ -1,7 +1,8 @@
-# gpSP x86 dynarec (32-bit, no RETRO_GO), INPUT="0-1200:128,100-110:256,400-410:256,700-710:256", level states
+# gpSP x86 dynarec (32-bit, SSE float math: x87 changes the audio mixer's rounding),
+# no RETRO_GO, INPUT="0-1200:128,100-110:256,400-410:256,700-710:256", level states
 sonic frames 300 hash 7ce642f7 audio 3a63b955
 sonic frames 600 hash bd5347d2 audio d31bc895
 mslug frames 300 hash c48f419a audio de2ac4c5
 mslug frames 600 hash 1dcd9da0 audio f8e02bc5
 tmnt frames 300 hash c2b140a2 audio 171ac235
-tmnt frames 600 hash 0f520b2c audio 74657d75
+tmnt frames 600 hash 0f520b2c audio 7a3d3d75

@@ -35,7 +35,7 @@
 u8 *last_rom_translation_ptr = NULL;
 u8 *last_ram_translation_ptr = NULL;
 
-#if defined(MMAP_JIT_CACHE)
+#if defined(MMAP_JIT_CACHE) || defined(XTENSA_ARCH)   /* xtensa: allocated by the app (xjit) */
 u8* rom_translation_cache;
 u8* ram_translation_cache;
 u8 *rom_translation_ptr;
@@ -78,6 +78,10 @@ typedef struct
   u32 next_entry;
 } hashhdr_type;
 
+#if defined(XTENSA_ARCH) && defined(ESP_PLATFORM)
+#include "esp_attr.h"
+EXT_RAM_BSS_ATTR   /* 256 KB: PSRAM (internal RAM is short on the ESP32-S3) */
+#endif
 u32 rom_branch_hash[ROM_BRANCH_HASH_SIZE];
 
 typedef struct
@@ -215,7 +219,9 @@ typedef struct
   u32 offset = opcode & 0x07FF                                                \
 
 /* Include the right emitter headers */
-#if defined(MIPS_ARCH)
+#if defined(XTENSA_ARCH)
+  #include "xtensa/xtensa_emit.h"   /* esp32-emu-turbo */
+#elif defined(MIPS_ARCH)
   #include "mips/mips_emit.h"
 #elif defined(ARM_ARCH)
   #include "arm/arm_emit.h"
@@ -250,6 +256,8 @@ typedef struct
   void platform_cache_sync(void *baseaddr, void *endptr) {
     __clear_cache(baseaddr, endptr);
   }
+#elif defined(XTENSA_ARCH)
+  /* xtensa/xtensa_stub.c */
 #elif defined(MIPS_ARCH)
   void platform_cache_sync(void *baseaddr, void *endptr) {
     __builtin___clear_cache(baseaddr, endptr);
@@ -3156,6 +3164,11 @@ bool translate_block_arm(u32 pc, bool ram_region)
     }
   }
 
+#ifdef XTENSA_ARCH
+  /* Xtensa code is 2/3-byte instructions: the next block's header (u32
+     words, and a 32-bit store ignores the low address bits) must be aligned */
+  translation_ptr = (u8 *)(((uintptr_t)translation_ptr + 3) & ~(uintptr_t)3);
+#endif
   if (ram_region)
     ram_translation_ptr = translation_ptr;
   else
@@ -3313,6 +3326,11 @@ bool translate_block_thumb(u32 pc, bool ram_region)
     }
   }
 
+#ifdef XTENSA_ARCH
+  /* Xtensa code is 2/3-byte instructions: the next block's header (u32
+     words, and a 32-bit store ignores the low address bits) must be aligned */
+  translation_ptr = (u8 *)(((uintptr_t)translation_ptr + 3) & ~(uintptr_t)3);
+#endif
   if (ram_region)
     ram_translation_ptr = translation_ptr;
   else

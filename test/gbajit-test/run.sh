@@ -4,7 +4,7 @@
 # ~/Documents/myProjects/esp32-emu-turbo-scratch/gbajit/roms (mounted at /roms by docker.sh).
 set -e
 G=$1; T=${2:-600}
-cd build
+cd ${B:-build}
 python -m esptool --chip=esp32s3 merge_bin --fill-flash-size 16MB -o qemu_flash.bin @flash_args >/dev/null
 dd if=/roms/$G.gba of=qemu_flash.bin bs=64k seek=$((0x400000 / 65536)) conv=notrunc status=none
 dd if=/roms/$G.state of=qemu_flash.bin bs=64k seek=$((0xC00000 / 65536)) conv=notrunc status=none

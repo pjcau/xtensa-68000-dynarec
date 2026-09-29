@@ -14,3 +14,15 @@ ROMs and states come from `~/Documents/myProjects/esp32-emu-turbo-scratch/gbajit
 - QEMU's QIO flash reads (`esp_flash_read`) come back 2 bytes late: this app uses DIO.
 - 2026-09-29: the interpreter in QEMU gives the PC reference hashes exactly
   (Sonic, 300 and 600 frames, video and audio).
+
+## The Xtensa dynarec (step 5, 2026-09-29)
+
+    ./docker.sh "GBAJIT=1 idf.py -B build_jit -DSDKCONFIG=build_jit/sdkconfig build"
+    ./docker.sh "B=build_jit ./run.sh sonic 150"
+
+builds gpSP with `HAVE_DYNAREC XTENSA_ARCH` (gbsp-libretro/xtensa/, a port of the
+x86 backend: ARM state and flags in memory, memory handlers and trampolines in
+C) and the translation caches in PSRAM mapped executable. In QEMU its hashes
+equal the x86 dynarec's (`x86ref/refs_x86jit.txt`) on Sonic Advance, Metal Slug
+Advance and TMNT, video and audio, at 300 and 600 frames. The x86 reference
+must use SSE float math: x87 rounds the audio mixer differently.

@@ -23,6 +23,13 @@
 #include "sound.h"
 #include "gba_memory.h"
 #include "libretro.h"
+#ifdef HAVE_DYNAREC
+#include "xjit_exec.h"
+int dynarec_enable = 1;
+extern u32 xt_exec_delta;
+extern u8 *rom_translation_cache, *ram_translation_cache, *rom_translation_ptr, *ram_translation_ptr;
+u32 execute_arm_translate(u32 cycles);
+#endif
 
 /* what gbsp/main/main.c provides to the core */
 u32 idle_loop_target_pc = 0xFFFFFFFF;
@@ -106,6 +113,25 @@ static void run(void *arg)
     libretro_supports_bitmasks = true;
     retro_set_input_state(input_cb);
     gbsp_render_start();
+#ifdef HAVE_DYNAREC
+    {
+        /* translation caches in PSRAM mapped executable, before the ROM cache
+           takes the rest */
+        static xj_exec_t jit;
+        if (!xj_exec_alloc_psram(&jit, ROM_TRANSLATION_CACHE_SIZE + RAM_TRANSLATION_CACHE_SIZE))
+        {
+            printf("GBAJIT no memory for the translation caches\n");
+            vTaskDelete(NULL);
+        }
+        rom_translation_cache = jit.data;
+        ram_translation_cache = jit.data + ROM_TRANSLATION_CACHE_SIZE;
+        rom_translation_ptr = rom_translation_cache;
+        ram_translation_ptr = ram_translation_cache;
+        xt_exec_delta = jit.exec - (u32)(uintptr_t)jit.data;
+        printf("GBAJIT dynarec: caches %u KB at %p (exec %08lx)\n",
+               (unsigned)((ROM_TRANSLATION_CACHE_SIZE + RAM_TRANSLATION_CACHE_SIZE) / 1024), jit.data, (unsigned long)jit.exec);
+    }
+#endif
     init_gamepak_buffer();
     printf("GBAJIT ROM cache ready\n");
     init_sound();
@@ -138,7 +164,11 @@ static void run(void *arg)
         update_input();
         rumble_frame_reset();
         clear_gamepak_stickybits();
+#ifdef HAVE_DYNAREC
+        execute_arm_translate(execute_cycles);
+#else
         execute_arm(execute_cycles);
+#endif
         u32 n = sound_read_samples(audio, 2048);
         for (u32 i = 0; i < n * 2; i++) ahash = (ahash ^ (uint16_t)audio[i]) * 16777619u;
         uint32_t h = 2166136261u;
