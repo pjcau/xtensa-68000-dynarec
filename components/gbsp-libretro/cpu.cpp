@@ -1540,6 +1540,14 @@ IRAM_ATTR void execute_arm(u32 cycles)
   cycles_remaining = cycles;
 #ifdef RETRO_GO
   m4a_check();
+  /* constant for this call (m4a_check above, game load): kept in locals so
+     the per-instruction checks do not reload globals. The two m4a loop heads
+     are 4 or 8 bytes apart: one unsigned range test, then the exact one. */
+  const u32 idle_pc = idle_loop_target_pc;
+  const u32 m4a_lo = m4a_pc_out < m4a_pc_in ? m4a_pc_out : m4a_pc_in;
+  const u32 m4a_span = (m4a_pc_out < m4a_pc_in ? m4a_pc_in : m4a_pc_out) - m4a_lo;
+#else
+  const u32 idle_pc = idle_loop_target_pc;
 #endif
   while(1)
   {
@@ -1581,7 +1589,8 @@ arm_loop:
        reg[REG_PC] &= ~0x03;
 #ifdef RETRO_GO
        /* the m4a mixer loop, natively (m4a_hle.h) */
-       if (reg[REG_PC] == m4a_pc_out || reg[REG_PC] == m4a_pc_in)
+       if (__builtin_expect(reg[REG_PC] - m4a_lo <= m4a_span, 0) &&
+           (reg[REG_PC] == m4a_pc_out || reg[REG_PC] == m4a_pc_in))
        {
          u32 hle_pc = reg[REG_PC];
          if (m4a_run(hle_pc, cycles_remaining, n_flag, z_flag, c_flag, v_flag))
@@ -1594,6 +1603,8 @@ arm_loop:
        opcode = readaddress32(pc_address_block, (reg[REG_PC] & 0x7FFF));
        condition = opcode >> 28;
 
+       /* nearly every ARM instruction is AL: skip the condition dispatch */
+       if (__builtin_expect(condition != 0xE, 0))
        switch(condition)
        {
           case 0x0:
@@ -3126,7 +3137,7 @@ skip_instruction:
        /* End of Execute ARM instruction */
        cycles_remaining -= ws_cyc_seq[(reg[REG_PC] >> 24) & 0xF][1];
 
-       if (reg[REG_PC] == idle_loop_target_pc && cycles_remaining > 0) cycles_remaining = 0;
+       if (__builtin_expect(reg[REG_PC] == idle_pc, 0) && cycles_remaining > 0) cycles_remaining = 0;
 
        if (cpu_alert & (CPU_ALERT_HALT | CPU_ALERT_IRQ))
          goto alert;
@@ -3617,7 +3628,7 @@ thumb_loop:
        /* End of Execute THUMB instruction */
        cycles_remaining -= ws_cyc_seq[(reg[REG_PC] >> 24) & 0xF][0];
 
-       if (reg[REG_PC] == idle_loop_target_pc && cycles_remaining > 0) cycles_remaining = 0;
+       if (__builtin_expect(reg[REG_PC] == idle_pc, 0) && cycles_remaining > 0) cycles_remaining = 0;
 
        if (cpu_alert & (CPU_ALERT_HALT | CPU_ALERT_IRQ))
           goto alert;
