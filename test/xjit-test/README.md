@@ -1,7 +1,7 @@
 # xjit-test
 
 Standalone ESP-IDF test app for the shared Xtensa JIT core (`components/xjit`),
-step by step as in `website/docs/next-steps/jit-plan.md`. It is not one of
+step by step as in the [JIT plan](https://github.com/pjcau/esp32-emu-turbo/blob/main/website/docs/next-steps/jit-plan.md). It is not one of
 `rg_tool.py`'s apps and changes no emulator.
 
 ## QEMU

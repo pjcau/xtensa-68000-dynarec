@@ -1,0 +1,8 @@
+build/
+build_*/
+sdkconfig
+sdkconfig.old
+*.gba
+*.state
+*.sram
+qemu_*.bin

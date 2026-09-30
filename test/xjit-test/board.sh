@@ -2,9 +2,11 @@
 # Run the built xjit-test on the board without touching the emulators: it goes into the
 # opentyrian-go partition through the launcher's SD update, runs once (XJIT lines on the USB
 # console) and reboots into the launcher; then the original opentyrian-go image goes back.
-#   ./board.sh               (from retro-go/xjit-test, after ./docker.sh "idf.py build")
+# Needs the esp32-emu-turbo board tools (scripts/board_ctl.py) and a built opentyrian-go:
+#   EMU_TURBO=~/esp32-emu-turbo ./board.sh    (after ./docker.sh "idf.py build")
 set -e
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=${EMU_TURBO:?set EMU_TURBO to the esp32-emu-turbo checkout}
 CTL="python3 $ROOT/scripts/board_ctl.py"
 ORIG=$ROOT/retro-go/opentyrian-go/build/opentyrian-go.bin
 [ -f "$ORIG" ] || { echo "no $ORIG to restore afterwards: build opentyrian-go first"; exit 1; }
@@ -15,7 +17,7 @@ update() {   # update <image>: into the opentyrian-go partition
   timeout 30 $CTL launcher >/dev/null 2>&1 || true; sleep 25
   timeout 20 $CTL ls /sd/retro-go/update | grep opentyrian
 }
-update retro-go/xjit-test/build/xjit-test.bin
+update "$HERE/build/xjit-test.bin"
 timeout 200 python3 - <<'PY' | grep -a -E "XJIT|Guru|PC  |Backtrace"
 import sys, time
 sys.path.insert(0, 'scripts')

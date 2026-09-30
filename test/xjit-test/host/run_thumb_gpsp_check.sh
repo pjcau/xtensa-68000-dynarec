@@ -3,7 +3,7 @@
 #   run_thumb_gpsp_check.sh <any .gba ROM> [sequences]
 set -e
 H=$(cd "$(dirname "$0")" && pwd)
-G=$H/../../gbsp/components/gbsp-libretro
+G=$H/../../../components/gbsp-libretro
 X=$H/../../components/xjit
 T=$(mktemp -d)
 FLAGS="-O2 -w -fomit-frame-pointer -ffast-math -DOVERCLOCK_60FPS -DROM_BUFFER_SIZE=8 -DRETRO_GO=1 -I$H/stub -I$G -I$G/libretro/libretro-common/include -I$H/../main -I$X/include"

@@ -1,7 +1,7 @@
 # The gbsp app's gpSP sources, compiled here with the same flags (no retro-go component).
 # GBAJIT=1 in the environment at configure time: the dynarec with the Xtensa backend
 # (cpu_threaded.c + xtensa/xtensa_stub.c) instead of the interpreter.
-set(G ${CMAKE_CURRENT_LIST_DIR}/../../../gbsp/components/gbsp-libretro)
+set(G ${CMAKE_CURRENT_LIST_DIR}/../../../../components/gbsp-libretro)
 set(SRCS ${G}/cheats.c ${G}/cpu.cpp ${G}/gba_cc_lut.c ${G}/gba_memory.c ${G}/gbp.c ${G}/input.c
          ${G}/main.c ${G}/memmap.c ${G}/rfu.c ${G}/savestate.c ${G}/serial.c ${G}/sound.c ${G}/video.cpp)
 if(DEFINED ENV{GBAJIT})

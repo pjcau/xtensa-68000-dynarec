@@ -3,7 +3,7 @@
 # Same sources as retro-go/gbsp (mounted at /g), without RETRO_GO (its dynamic VRAM/EWRAM do not fit
 # the x86 stub); harness host_jit.c. Output: ./gbahost-x86 in the current directory.
 # Image: docker build -t gpsp-i386 . (from this directory). Hashes: refs_x86jit.txt
-docker run --rm -v $(cd "$(dirname "$0")/../../gbsp/components/gbsp-libretro" && pwd):/g \
+docker run --rm -v $(cd "$(dirname "$0")/../../../components/gbsp-libretro" && pwd):/g \
   -v $(cd "$(dirname "$0")" && pwd):/w -v $PWD:/o -w /o -e DEFS="$DEFS" -e EXTRA="$EXTRA" gpsp-i386 bash -c '
 set -e
 F="-O2 -g -w -fomit-frame-pointer -ffast-math -DOVERCLOCK_60FPS -DROM_BUFFER_SIZE=8 ${DEFS:--DIRAM_ATTR=} -DHAVE_DYNAREC -DX86_ARCH -DMMAP_JIT_CACHE ${EXTRA:--msse2 -mfpmath=sse} -I/w -I/g -I/g/libretro/libretro-common/include"
