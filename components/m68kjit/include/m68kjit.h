@@ -32,6 +32,10 @@ typedef struct
     const uint8_t *cyc;                     /* opcode -> base cycles (65536) */
     /* cycle adjustments of the CPU type (Musashi's USE_CYCLES(CYC_...), may be < 0) */
     int cyc_bcc_notake_b, cyc_bcc_notake_w, cyc_dbcc_f_noexp, cyc_dbcc_f_exp;
+    int cyc_shift;                          /* a shift by n costs n << cyc_shift more */
+    int cyc_movem_w, cyc_movem_l;           /* MOVEM: registers << these, more */
+    /* MOVE.l / MOVEM.l to -(An) as two 16-bit writes, low word first (Musashi 4.x) */
+    bool pd_long_split16;
     /* memory as the interpreter's instructions see it (address mask, function code) */
     uint32_t (*read8)(uint32_t), (*read16)(uint32_t), (*read32)(uint32_t);
     void (*write8)(uint32_t, uint32_t), (*write16)(uint32_t, uint32_t), (*write32)(uint32_t, uint32_t);
@@ -50,7 +54,7 @@ void m68kjit_flush(void);                   /* drop every translated block */
 
 typedef struct
 {
-    uint32_t blocks, insns, native, block_runs, block_insns, steps, exits_pc, exits_cycles;
+    uint32_t blocks, insns, native, links, block_runs, block_insns, steps, exits_pc, exits_cycles;
 } m68kjit_stats_t;
 extern m68kjit_stats_t m68kjit_stats;
 

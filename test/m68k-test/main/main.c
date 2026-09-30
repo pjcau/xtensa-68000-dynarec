@@ -34,7 +34,21 @@ void app_main(void)
     uint32_t nat0 = m68kjit_stats.native, runs0 = m68kjit_stats.block_runs;
     for (int i = 0; i < n; i++)
         if (fuzz_seed(1001 + i, 32, bad < 20)) bad++;
-    printf("M68K NATIVE-HEAVY %d seeds, %d mismatches; native %u runs %u\n", n, bad,
-           (unsigned)(m68kjit_stats.native - nat0), (unsigned)(m68kjit_stats.block_runs - runs0));
+    printf("M68K NATIVE-HEAVY %d seeds, %d mismatches; native %u runs %u links %u\n", n, bad,
+           (unsigned)(m68kjit_stats.native - nat0), (unsigned)(m68kjit_stats.block_runs - runs0), (unsigned)m68kjit_stats.links);
+    /* one instruction family at a time: each native group gets many runs with
+     * edge-value registers and SR saved to RAM after most instructions */
+    int fbad = 0;
+    for (int f = 0; f < FUZZ_FORMS; f++)
+    {
+        fuzz_form = f;
+        int b = 0;
+        for (int i = 0; i < 20; i++)
+            if (fuzz_seed(5001 + f * 100 + i, 32, fbad + b < 20)) b++;
+        if (b) printf("M68K form %d: %d mismatches\n", f, b);
+        fbad += b;
+    }
+    fuzz_form = -1;
+    printf("M68K BY-FORM %d families x 20 seeds, %d mismatches\n", FUZZ_FORMS, fbad);
     printf("M68K done\n");
 }

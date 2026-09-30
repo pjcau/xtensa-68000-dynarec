@@ -42,6 +42,7 @@ bool fuzz_translate = true;         /* false: the dynarec interprets everything 
 /* percent of the generated instructions drawn from the forms m68kjit
  * translates natively (register-only ALU, MOVE, MOVEQ, ADDQ, LEA, ...) */
 int fuzz_native_bias = 0;
+int fuzz_form = -1;                 /* >= 0: native_form() draws only this family */
 
 static uint16_t native_form(void)
 {
@@ -50,7 +51,7 @@ static uint16_t native_form(void)
     int smode = (int[]){0, 1, 7}[(r >> 12) % 3], sreg = smode == 7 ? 4 : ry;
     int mmode = (int[]){2, 3, 4, 5, 6, 7, 7}[(r >> 25) % 7], mreg = mmode == 7 ? (r >> 28) % 2 : rx;   /* (An) (An)+ -(An) (d16,An) (d8,An,Xn) abs.w abs.l */
     int cmode = (int[]){2, 5, 6, 7, 7, 7, 7}[(r >> 25) % 7], creg = cmode == 7 ? (r >> 28) % 4 : rx;   /* control modes, PC-relative too */
-    switch ((r >> 16) % 21)                 /* 20: Bcc (default) */
+    switch (fuzz_form >= 0 ? fuzz_form : (int)((r >> 16) % 23))   /* 22: Bcc (default) */
     {
     case 0: return 0x7000 | rx << 9 | (r >> 20 & 0xFF);                                   /* MOVEQ */
     case 1: return (int[]){0x1000, 0x3000, 0x2000}[ss] | rx << 9 | ((r >> 20) & 1) << 6 | smode << 3 | sreg;   /* MOVE/MOVEA */
@@ -70,6 +71,8 @@ static uint16_t native_form(void)
     case 15: return (int[]){0x0000, 0x0200, 0x0400, 0x0600, 0x0A00, 0x0C00}[(r >> 20) % 6] | ss << 6 | ((r >> 23) & 1 ? mmode << 3 | mreg : ry);  /* xxxI */
     case 16: return ((r >> 20) & 1 ? 0x4A00 : 0x4200) | ss << 6 | mmode << 3 | mreg;        /* TST/CLR mem */
     case 17: return 0x5000 | rx << 9 | ((r >> 20) & 1) << 8 | ss << 6 | mmode << 3 | mreg;  /* ADDQ/SUBQ mem */
+    case 20: return 0xE000 | rx << 9 | ((r >> 20) & 1) << 8 | ss << 6 | ((r >> 21) & 7) << 3 | ry;   /* shifts: #n and Dn counts, all kinds */
+    case 21: return 0x4880 | ((r >> 20) & 1) << 10 | ((r >> 21) & 1) << 6 | (int[]){2, 3, 4, 5, 6, 7, 7}[(r >> 22) % 7] << 3 | ((r >> 22) % 7 >= 5 ? (r >> 25) % 4 : ry);   /* MOVEM */
     case 11: return 0x50C8 | ((r >> 20) & 0xF) << 8 | ry;                                   /* DBcc (disp: next word) */
     default: return 0x6000 | ((r >> 20) & 0xF) << 8 | (r >> 24 & 0xFE);                   /* Bcc: flags get used */
     }
@@ -119,17 +122,24 @@ static void setup(uint32_t seed)
     {
         if (rnd() % 8 == 0) { pc += 2 * (1 + rnd() % 4); continue; }
         uint16_t op;
-        do op = (int)(rnd() % 100) < fuzz_native_bias ? native_form() : rnd(); while (!m68k_is_valid_instruction(op, M68K_CPU_TYPE_68000) || (op >> 12) == 0xA || (op >> 12) == 0xF
+        bool nat = (int)(rnd() % 100) < fuzz_native_bias;
+        do op = nat ? native_form() : rnd(); while (!m68k_is_valid_instruction(op, M68K_CPU_TYPE_68000) || (op >> 12) == 0xA || (op >> 12) == 0xF
                              || op == 0x4AFC || (op & 0xFFF0) == 0x4E40 || op == 0x4E72 || op == 0x4E70);
         mem[pc] = op >> 8; mem[pc + 1] = op;
         int len = m68kjit_insn_len(op);
         for (int i = 2; i < len; i += 2) mem[pc + i] &= ~1;     /* extension words: brief format (bit 8 clear) */
         pc += len;
+        /* native-heavy: often save SR on the stack (RAM) right after, so the RAM
+         * hash sees the flags of that instruction before later ones overwrite them */
+        if (nat && (rnd() & 1)) { mem[pc] = 0x40; mem[pc + 1] = 0xE7; pc += 2; }   /* MOVE SR,-(A7) */
     }
     m68k_pulse_reset();
+    static const uint32_t edge[] = {0, 1, 0xFFFFFFFF, 0x80000000, 0x7FFFFFFF, 0xFF, 0x80, 0x7F,
+                                    0xFFFF, 0x8000, 0x7FFF, 0xFFFFFF80, 0xFFFF8000, 0x00FF00FF, 0xFF00FF00};
     for (int i = 0; i < 15; i++)
     {
         uint32_t r = rnd();
+        if (i < 8 && (rnd() & 1)) r = edge[rnd() % (sizeof(edge) / sizeof(edge[0]))];   /* flag edge cases */
         if (i >= 8 && (r & 3)) r = ROM_SIZE + (r % (MEM_SIZE - ROM_SIZE));   /* most An point into RAM */
         m68k_set_reg(regs[i], r);
     }

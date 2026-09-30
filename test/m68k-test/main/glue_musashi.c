@@ -41,6 +41,9 @@ bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint3
         .cyc = CYC_INSTRUCTION,
         .cyc_bcc_notake_b = (int)CYC_BCC_NOTAKE_B, .cyc_bcc_notake_w = (int)CYC_BCC_NOTAKE_W,
         .cyc_dbcc_f_noexp = (int)CYC_DBCC_F_NOEXP, .cyc_dbcc_f_exp = (int)CYC_DBCC_F_EXP,
+        .cyc_shift = (int)CYC_SHIFT,
+        .cyc_movem_w = (int)CYC_MOVEM_W, .cyc_movem_l = (int)CYC_MOVEM_L,
+        .pd_long_split16 = true,                /* m68k_op_move_32_pd_*, m68k_op_movem_32_re_pd */
         .read8 = rd8, .read16 = rd16, .read32 = rd32,
         .write8 = wr8, .write16 = wr16, .write32 = wr32,
         .step = step,

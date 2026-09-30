@@ -46,6 +46,7 @@ typedef struct
     uint32_t pc;
 #ifdef M68KJIT_XTENSA
     void (*code)(void);
+    uint32_t chain;                 /* where a chained exit jumps in (a2, a3 already set) */
 #else
     int first, count;               /* in insns[] */
 #endif
@@ -65,6 +66,17 @@ static size_t cache_used;
 static uint8_t scratch[8192];
 static uint32_t base;                       /* the lowest address of the state below */
 static int o_ppc, o_pc, o_ir, o_dar, o_x, o_n, o_z, o_v, o_c;   /* offsets from base */
+/* Chaining: an exit with a known target jumps through a slot. A new slot holds
+ * the unlinked stub, which records the slot in last_slot and returns to
+ * m68kjit_run(); once m68kjit_run() has the block at that target, the slot
+ * holds the block's chain entry and the exit goes straight there. */
+#define M68KJIT_MAX_SLOTS 8192
+static uint32_t *slots;
+static int n_slots;
+static uint32_t *volatile last_slot;
+static uint32_t stub;                       /* the unlinked stub */
+static int chain_label;                     /* the block being emitted: its chain entry */
+static int n_extra;                         /* cycles a native instruction adds to its table value */
 #else
 static insn_t *insns;
 static int n_insns;
@@ -92,6 +104,8 @@ bool m68kjit_init(const m68kjit_host_t *host)
     o_dar = (uintptr_t)H.dar - base;
     if (!cache.data && !xj_exec_alloc_psram(&cache, M68KJIT_CODE_SIZE))
         return false;
+    if (!slots) slots = malloc(sizeof(uint32_t) * M68KJIT_MAX_SLOTS);
+    if (!slots) return false;
 #else
     if (!insns) insns = malloc(sizeof(insn_t) * M68KJIT_MAX_TOTAL);
     if (!insns) return false;
@@ -100,11 +114,24 @@ bool m68kjit_init(const m68kjit_host_t *host)
     return true;
 }
 
+#ifdef M68KJIT_XTENSA
+static void *install(xj_block_t *b);
+#endif
+
 void m68kjit_flush(void)
 {
     n_blocks = 0;
 #ifdef M68KJIT_XTENSA
     cache_used = 0;
+    n_slots = 0;
+    last_slot = NULL;
+    /* the unlinked stub: last_slot = a9 (the slot); return to m68kjit_run() */
+    static xj_block_t sb;
+    xjb_init(&sb, scratch, sizeof(scratch));
+    xjb_lit(&sb, 10, (uint32_t)(uintptr_t)&last_slot);
+    xj_s32i(&sb.e, 9, 10, 0);
+    xj_retw_n(&sb.e);
+    stub = (uint32_t)(uintptr_t)install(&sb);
 #else
     n_insns = 0;
 #endif
@@ -174,9 +201,9 @@ static int decode(uint32_t pc, insn_t *out, int max)
  * neither PPC nor IR, and PC only when the block leaves after it.
  */
 enum { SZ_B = 1, SZ_W = 2, SZ_L = 4 };
-enum { N_NONE, N_MOVEQ, N_MOVE, N_MOVEA, N_ALU, N_ALUA, N_ADDQA, N_TST, N_CLR, N_SWAP, N_EXTW, N_EXTL, N_LEA, N_BCC, N_DBCC,
+enum { N_NONE, N_MOVEQ, N_MOVE, N_MOVEA, N_ALU, N_ALUA, N_ADDQA, N_TST, N_CLR, N_SWAP, N_EXTW, N_EXTL, N_LEA, N_BCC, N_DBCC, N_SHIFT,
        /* with a memory operand (N_MEM and above) */
-       N_MEM, N_MOVE_M = N_MEM, N_ALU_M, N_ALUA_M, N_RMW, N_TST_M, N_CLR_M, N_PEA,
+       N_MEM, N_MOVE_M = N_MEM, N_ALU_M, N_ALUA_M, N_RMW, N_TST_M, N_CLR_M, N_PEA, N_MOVEM,
        /* leaving the block (a jump) */
        N_JSR, N_BSR, N_RTS };
 
@@ -283,6 +310,15 @@ static bool classify(const insn_t *i, nat_t *n)
         n->pc_read = i->next;
         return true;
     }
+    case 0xE:                                                   /* LSL LSR ASL ASR ROL ROR #n,Dn */
+    {
+        int type = (op >> 3) & 3;
+        if (ss == 3 || (op & 0x20) || type == 2) return false;  /* memory, count in a register, ROXL/ROXR */
+        n->kind = N_SHIFT; n->size = ss_size[ss]; n->dst = ry;
+        n->alu = type << 1 | ((op >> 8) & 1);                   /* 0 ASR 1 ASL 2 LSR 3 LSL 6 ROR 7 ROL */
+        n->simm = rx ? rx : 8;
+        return true;
+    }
     case 0x7:                                                   /* MOVEQ */
         if (op & 0x100) return false;
         n->kind = N_MOVEQ; n->dst = rx; n->simm = (uint32_t)(int8_t)op;
@@ -303,8 +339,7 @@ static bool classify(const insn_t *i, nat_t *n)
             n->pc_read = i->next;
             return true;
         }
-        /* to memory; MOVE.l to -(An) is left to the handler (Musashi versions split its write differently) */
-        if (size == SZ_L && dmode == 4) return false;
+        /* to memory (MOVE.l to -(An): written the way this Musashi writes it) */
         int sext;
         if (reg_src(i, size, true, n)) { n->msrc = 0; sext = imm_bytes(mode, ry, size); }
         else
@@ -419,6 +454,18 @@ static bool classify(const insn_t *i, nat_t *n)
             return true;
         }
         if (op == 0x4E75) { n->kind = N_RTS; return true; }
+        if ((op & 0xFB80) == 0x4880 && mode >= 2)              /* MOVEM */
+        {
+            bool load = op & 0x400;
+            n->size = (op & 0x40) ? SZ_L : SZ_W;
+            n->simm = H.read_code16(i->pc + 2);                 /* register list */
+            if (load ? mode == 4 : mode == 3) return false;
+            if (mode == 3 || mode == 4) { n->mem.kind = mode == 3 ? O_PI : O_PD; n->mem.reg = 8 + ry; }
+            else if (mem_ea(mode, ry, i->pc + 4, !load, &n->mem) < 0) return false;
+            n->kind = N_MOVEM; n->cmpi = load;                  /* cmpi: memory to registers */
+            n->pc_read = i->next;
+            return true;
+        }
         return false;
     }
     return false;
@@ -582,6 +629,76 @@ static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
         xj_s32i(e, 8, 2, o_r(n->dst));
         flags_logic(e, 8, SZ_L);
         break;
+    case N_SHIFT:
+    {
+        int w = n->size * 8, k = n->simm, t = n->alu;
+        xj_l32i(e, 8, 2, o_r(n->dst));                      /* a8 = src (masked) */
+        if (w < 32) xj_extui(e, 8, 8, 0, w);
+        switch (t)
+        {
+        case 0:                                             /* ASR */
+            if (w < 32) xj_sext(e, 10, 8, w - 1); else xj_mov(e, 10, 8);
+            xj_srai(e, 10, 10, k);
+            if (w < 32) xj_extui(e, 10, 10, 0, w);
+            break;
+        case 2: xj_srli(e, 10, 8, k); break;                /* LSR */
+        case 1: case 3:                                     /* ASL, LSL */
+            xj_slli(e, 10, 8, k);
+            if (w < 32) xj_extui(e, 10, 10, 0, w);
+            break;
+        case 6: case 7:                                     /* ROR, ROL */
+        {
+            int r = t == 6 ? k : w - k;                     /* rotate right by r */
+            if (w == 32) { xj_ssai(e, r); xj_src(e, 10, 8, 8); }
+            else if (r == w) xj_mov(e, 10, 8);
+            else
+            {
+                xj_srli(e, 10, 8, r);
+                xj_slli(e, 11, 8, w - r);
+                xj_or(e, 10, 10, 11);
+                xj_extui(e, 10, 10, 0, w);
+            }
+            break;
+        }
+        }
+        store_reg(e, 10, n->dst, n->size);
+        /* C: the last bit out (ROL: bit 0 of the result, ROR: its top bit) */
+        int cbit = t == 7 ? -1 : t == 6 ? -2 : (t & 1) ? w - k : k - 1;
+        if (cbit == -1) xj_extui(e, 11, 10, 0, 1);
+        else if (cbit == -2) xj_extui(e, 11, 10, w - 1, 1);
+        else if (cbit < w) xj_extui(e, 11, 8, cbit, 1);
+        else xj_movi(e, 11, 0);
+        xj_slli(e, 11, 11, 8);
+        xj_s32i(e, 11, 2, o_c);
+        if (t < 6) xj_s32i(e, 11, 2, o_x);                  /* rotations keep X */
+        /* N, Z */
+        if (w == 8) xj_s32i(e, 10, 2, o_n);
+        else { shr(e, 11, 10, w - 8); xj_s32i(e, 11, 2, o_n); }
+        xj_s32i(e, 10, 2, o_z);
+        /* V: ASL only, set when the top k+1 bits of src are not all equal */
+        if (t == 1)
+        {
+            if (k + 1 > w)                                  /* ASL.b #8: V = src != 0 */
+                xj_mov(e, 9, 8);
+            else
+            {
+                xj_extui(e, 9, 8, w - 1 - k, k + 1);
+                xjb_imm(b, 12, (1u << (k + 1)) - 1);
+                xj_sub(e, 12, 9, 12);                       /* 0 when all ones */
+                xj_movi(e, 13, 0);
+                xj_moveqz(e, 9, 13, 12);                    /* all ones -> 0 */
+            }
+            xj_movi(e, 13, 0x80);
+            xj_movnez(e, 9, 13, 9);                         /* nonzero -> 0x80 */
+            xj_s32i(e, 9, 2, o_v);
+        }
+        else
+        {
+            xj_movi(e, 9, 0);
+            xj_s32i(e, 9, 2, o_v);
+        }
+        break;
+    }
     case N_LEA:
         emit_ea(b, &n->mem, SZ_L);
         xj_s32i(e, 4, 2, o_r(n->dst));
@@ -662,6 +779,20 @@ static void emit_write(xj_block_t *b, int r, int size)
     xj_callx8(e, 8);
 }
 
+/* write(a4 + 2, low word of r); write(a4, high word of r) */
+static void emit_write_split(xj_block_t *b, int r)
+{
+    xj_emit_t *e = &b->e;
+    xj_extui(e, 11, r, 0, 16);
+    xjb_lit(b, 8, (uint32_t)(uintptr_t)H.write16);
+    xj_addi(e, 10, 4, 2);
+    xj_callx8(e, 8);
+    xj_extui(e, 11, r, 16, 16);
+    xjb_lit(b, 8, (uint32_t)(uintptr_t)H.write16);
+    xj_mov(e, 10, 4);
+    xj_callx8(e, 8);
+}
+
 static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
 {
     xj_emit_t *e = &b->e;
@@ -689,7 +820,10 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         {
             emit_pc(b, i->next, &stored);
             emit_ea(b, &n->mem2, n->size);
-            emit_write(b, 7, n->size);
+            if (n->size == SZ_L && n->mem2.kind == O_PD && H.pd_long_split16)
+                emit_write_split(b, 7);
+            else
+                emit_write(b, 7, n->size);
         }
         else if (n->mdst == 1)                              /* MOVEA */
         {
@@ -782,6 +916,39 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         emit_read(b, SZ_L);
         xj_s32i(e, 10, 2, o_pc);
         break;
+    case N_MOVEM:
+    {
+        /* Musashi's loop unrolled over the (fixed) register list; a4 walks the
+         * memory, An of (An)+ / -(An) gets the final address at the end */
+        int step = n->size, list = n->simm, count = 0;
+        bool load = n->cmpi, pd = n->mem.kind == O_PD, pi = n->mem.kind == O_PI;
+        emit_pc(b, n->pc_read, &stored);
+        if (pd || pi) xj_l32i(e, 4, 2, o_r(n->mem.reg));
+        else emit_ea(b, &n->mem, n->size);
+        for (int k = 0; k < 16; k++)
+        {
+            if (!(list & (1 << k))) continue;
+            int reg = pd ? 15 - k : k;
+            count++;
+            if (pd) xj_addi(e, 4, 4, -step);
+            if (load)
+            {
+                emit_read(b, n->size);
+                if (n->size == SZ_W) xj_sext(e, 10, 10, 15);
+                xj_s32i(e, 10, 2, o_r(reg));
+            }
+            else
+            {
+                xj_l32i(e, 7, 2, o_r(reg));
+                if (pd && n->size == SZ_L && H.pd_long_split16) emit_write_split(b, 7);
+                else emit_write(b, 7, n->size);
+            }
+            if (!pd) xj_addi(e, 4, 4, step);
+        }
+        if (pd || pi) xj_s32i(e, 4, 2, o_r(n->mem.reg));
+        n_extra = count << (n->size == SZ_L ? H.cyc_movem_l : H.cyc_movem_w);
+        break;
+    }
     case N_CLR_M:                                           /* a write of 0, no read (as Musashi) */
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, n->size);
@@ -856,6 +1023,26 @@ static void emit_cond(xj_block_t *b, int cc, int label)
     }
 }
 
+/* PC is stored and is the target, a6 = cycles: leave, through the slot of
+ * this exit when cycles are left (the next block runs straight away, as it
+ * would from m68kjit_run()) */
+static void emit_chain(xj_block_t *b)
+{
+    xj_emit_t *e = &b->e;
+    int ret = xjb_label(b);
+    xjb_bi(b, xj_blti, 6, 1, ret);
+    if (stub && n_slots < M68KJIT_MAX_SLOTS)
+    {
+        uint32_t *slot = &slots[n_slots++];
+        *slot = stub;
+        xjb_lit(b, 9, (uint32_t)(uintptr_t)slot);
+        xj_l32i(e, 8, 9, 0);
+        xj_jx(e, 8);
+    }
+    xjb_bind(b, ret);
+    xj_retw_n(e);
+}
+
 /* cycles -= c (a6 = the new count) */
 static void emit_cycles(xj_emit_t *e, int c)
 {
@@ -894,6 +1081,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
     xj_entry(e, 1, 32);
     xjb_lit(b, 2, base);
     xjb_lit(b, 3, (uint32_t)(uintptr_t)H.cycles);
+    chain_label = xjb_here(b);
     xjb_imm(b, 5, in[0].pc);
     for (int k = 0; k < n; k++)
     {
@@ -930,7 +1118,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 emit_cycles(e, i->cyc + H.cyc_dbcc_f_noexp);
                 xjb_imm(b, 7, nat.target);
                 xj_s32i(e, 7, 2, o_pc);
-                xj_retw_n(e);
+                emit_chain(b);
                 xjb_bind(b, expired);
                 emit_cycles(e, i->cyc + H.cyc_dbcc_f_exp);
                 int go = xjb_label(b);
@@ -950,7 +1138,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 emit_cycles(e, i->cyc);
                 xjb_imm(b, 7, nat.target);
                 xj_s32i(e, 7, 2, o_pc);
-                xj_retw_n(e);
+                emit_chain(b);
                 xjb_bind(b, go);
             }
             else if (nat.cc == 0)                           /* DBT: plain fall through */
@@ -983,8 +1171,9 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
             /* like a handler: PC is next after the instruction unless a memory
              * handler raised an exception; then cycles and the slice as usual */
             m68kjit_stats.native++;
+            n_extra = 0;
             emit_mem(b, i, &nat);
-            emit_cycles(e, i->cyc);
+            emit_cycles(e, i->cyc + n_extra);
             if (last)
                 break;
             xj_l32i(e, 7, 2, o_pc);
@@ -1003,7 +1192,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         {
             m68kjit_stats.native++;
             emit_native(b, i, &nat);
-            emit_cycles(e, i->cyc);
+            emit_cycles(e, i->cyc + (nat.kind == N_SHIFT ? (int)nat.simm << H.cyc_shift : 0));
             if (last)
             {
                 xj_addi(e, 7, 5, len);
@@ -1040,6 +1229,26 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         xj_retw_n(e);
         xjb_bind(b, more);
     }
+    /* the end: chain to the fall-through, or to the target of a BRA/BSR, when
+     * PC is that address (a handler may have taken an exception) */
+    const insn_t *l = &in[n - 1];
+    uint16_t lop = l->op;
+    uint32_t to = l->next;
+    bool known = !ends_block(lop);
+    if ((lop & 0xFE00) == 0x6000 && (lop & 0xFF) != 0xFF)             /* BRA, BSR */
+    {
+        to = l->pc + 2 + ((lop & 0xFF) ? (int8_t)lop : (int16_t)H.read_code16(l->pc + 2));
+        known = true;
+    }
+    if (known)
+    {
+        int ret = xjb_label(b);
+        xj_l32i(e, 7, 2, o_pc);
+        xjb_imm(b, 8, to);
+        xjb_b8(b, xj_bne, 7, 8, ret);
+        emit_chain(b);
+        xjb_bind(b, ret);
+    }
     xj_retw_n(e);
 }
 
@@ -1062,19 +1271,24 @@ static int translate(uint32_t pc)
         m68kjit_flush();
     int n = decode(pc, tmp, M68KJIT_MAX_INSNS);
     void *code = NULL;
+    int b_chain_off = 0;
     while (n > 0)
     {
         static xj_block_t b;                /* ~12 KB: never on the caller's stack */
         xjb_init(&b, scratch, sizeof(scratch));
         emit_block(&b, tmp, n);
         if (xjb_ok(&b) && (code = install(&b)))
+        {
+            b_chain_off = b.labels[chain_label];
             break;
+        }
         n /= 2;                             /* too many literals or too big: shorter */
     }
     if (!code)
         return -1;
     block_t *bl = &blocks[n_blocks];
     bl->code = (void (*)(void))code;
+    bl->chain = (uint32_t)(uintptr_t)code + b_chain_off;
 #else
     if (n_blocks == M68KJIT_MAX_BLOCKS || n_insns + M68KJIT_MAX_INSNS > M68KJIT_MAX_TOTAL)
         m68kjit_flush();
@@ -1118,6 +1332,9 @@ static void run_block(const block_t *b)
 
 void m68kjit_run(void)
 {
+#ifdef M68KJIT_XTENSA
+    last_slot = NULL;
+#endif
     do
     {
         uint32_t pc = *H.pc;
@@ -1127,6 +1344,13 @@ void m68kjit_run(void)
 #ifdef M68KJIT_TRACE
         if (b >= 0 && m68kjit_stats.block_runs < 30)
             printf("TRACE pc %06X blk %d n_blocks %d cyc %d bucket0 %d\n", (unsigned)pc, b, n_blocks, (int)*H.cycles, bucket[0]);
+#endif
+#ifdef M68KJIT_XTENSA
+        if (last_slot)                          /* the previous block left through an unlinked slot to here */
+        {
+            if (b >= 0) { *last_slot = blocks[b].chain; m68kjit_stats.links++; }
+            last_slot = NULL;
+        }
 #endif
         if (b >= 0)
             run_block(&blocks[b]);
