@@ -158,6 +158,14 @@ static void run(void *arg)
         printf("GBAJIT state loaded: %d (internal free %u KB, PSRAM free %u KB)\n", ok,
                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024), (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     }
+#ifdef HAVE_DYNAREC
+    {
+        /* the renderer's VRAM copy (video.cpp), after the state buffer is freed:
+           PSRAM is short in QEMU's 8 MB */
+        extern void gbsp_rvram_alloc(void);
+        gbsp_rvram_alloc();
+    }
+#endif
     uint32_t acc = 0, ahash = 2166136261u;
     int64_t t0 = esp_timer_get_time();
     for (int f = 0; f < N; f++)

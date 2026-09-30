@@ -1424,6 +1424,42 @@ void function_cc write_gpio(u32 address, u32 value) {
 extern volatile u32 gbsp_rq, gbsp_rd;
 extern u8 gbsp_pal_dirty;
 void gbsp_render_sync(void);
+#ifdef GBAPROF
+/* why core 0 waited (video.cpp, GBAWAIT line): 1/2 CPU VRAM BG/OBJ, 3/4 DMA VRAM BG/OBJ */
+extern u32 gbsp_sync_src;
+#define GBSP_SYNC_SRC(v) (gbsp_sync_src = (v))
+#else
+#define GBSP_SYNC_SRC(v) ((void)0)
+#endif
+#if defined(XTENSA_ARCH) && defined(ESP_PLATFORM)
+/* video.cpp (GBSP_RVRAM): the renderer has its own VRAM copy; writes mark
+   the 1 KB pages (offset already folded to 0..0x17FFF) */
+extern u32 gbsp_vram_dirty[3];
+extern u8 gbsp_vram_dirty_any;
+#define gbsp_vram_mark(off)                                                  \
+  (gbsp_vram_dirty[(off) >> 15] |= 1u << (((off) >> 10) & 31), gbsp_vram_dirty_any = 1)
+static void gbsp_vram_mark_range(u32 a, u32 b)   /* GBA addresses, a <= b */
+{
+  if (b - a >= 0x18000)
+  {
+    gbsp_vram_dirty[0] = gbsp_vram_dirty[1] = gbsp_vram_dirty[2] = 0xFFFFFFFF;
+    gbsp_vram_dirty_any = 1;
+    return;
+  }
+  for (u32 o = a & ~0x3FFu; o <= b; o += 0x400)
+  {
+    u32 f = o & 0x1FFFF;
+    if (f >= 0x18000)
+      f -= 0x8000;
+    gbsp_vram_mark(f);
+  }
+}
+#define VRAM_WRITE_BEFORE()
+#define VRAM_WRITE_AFTER(off) gbsp_vram_mark(off)
+#else
+#define VRAM_WRITE_BEFORE() video_write_sync(1)
+#define VRAM_WRITE_AFTER(off)
+#endif
 #ifdef ESP_PLATFORM
 #define video_write_sync(r) do { if (gbsp_rq != gbsp_rd) gbsp_render_sync(); } while (0)
 #else
@@ -1432,6 +1468,13 @@ extern u32 gbsp_sync_region;
 #endif
 #else
 #define video_write_sync(r)
+#endif
+#ifndef GBSP_SYNC_SRC
+#define GBSP_SYNC_SRC(v) ((void)0)
+#endif
+#ifndef VRAM_WRITE_BEFORE
+#define VRAM_WRITE_BEFORE() video_write_sync(1)
+#define VRAM_WRITE_AFTER(off)
 #endif
 
 #define write_gpio32()                                                        \
@@ -1460,10 +1503,12 @@ extern u32 gbsp_sync_region;
                                                                               \
     case 0x06:                                                                \
       /* VRAM */                                                              \
-      video_write_sync(1);                                                    \
+      GBSP_SYNC_SRC((address & 0x10000) ? 2 : 1);                             \
+      VRAM_WRITE_BEFORE();                                                    \
       address &= 0x1FFFF;                                                     \
       if(address >= 0x18000)                                                  \
         address -= 0x8000;                                                    \
+      VRAM_WRITE_AFTER(address);                                              \
                                                                               \
       write_vram##type();                                                     \
       break;                                                                  \
@@ -2105,7 +2150,14 @@ cpu_alert_type dma_transfer(unsigned dma_chan, int *usedcycles)
 #ifdef RETRO_GO
   /* only VRAM: the renderer reads per-line copies of OAM and palette */
   if (dst_reg0 == DMA_REGION_VRAM || dst_reg1 == DMA_REGION_VRAM)
+  {
+#if defined(XTENSA_ARCH) && defined(ESP_PLATFORM)
+    gbsp_vram_mark_range(MIN(dst_ptr, dst_end), MAX(dst_ptr, dst_end));
+#else
+    GBSP_SYNC_SRC((dst_ptr & 0x10000) ? 4 : 3);
     video_write_sync(1);
+#endif
+  }
 #endif
 
   if (src_reg0 == src_reg1 && dst_reg0 == dst_reg1)

@@ -26,6 +26,20 @@ u16* gba_screen_pixels = NULL;
 
 #define get_screen_pixels()   gba_screen_pixels
 
+#if defined(XTENSA_ARCH) && defined(RETRO_GO) && defined(ESP_PLATFORM)
+/* The renderer (core 1, drawing lines late) reads its own copy of VRAM:
+   CPU and DMA write the live VRAM and mark 1 KB pages dirty, and the dirty
+   pages are copied into the renderer's copy when the next line is queued,
+   after the lines queued before the write are drawn. A VRAM write no longer
+   waits for core 1 (Sonic's vblank DMA, TMNT's OBJ tiles: ~2 ms/frame). */
+#define GBSP_RVRAM 1
+extern "C" { u8 *gbsp_rvram; u32 gbsp_vram_dirty[3]; u8 gbsp_vram_dirty_any; void gbsp_vram_mark_all(void); }
+static inline u8 *gbsp_live_vram(void) { return vram; }   /* before vram is redefined */
+#define live_vram gbsp_live_vram()
+#undef vram
+#define vram gbsp_rvram   /* everything below is the renderer's view */
+#endif
+
 #ifdef RETRO_GO
 /* esp32-emu-turbo: the scanline renderer reads a snapshot of the display
    registers and affine references taken at that line's hblank (core 0), so
@@ -2360,7 +2374,9 @@ static const u8 active_layers[] = {
 };
 
 #ifdef GBAPROF
-extern "C" { int64_t gbaprof_render_us, gbaprof_wait_us; u32 gbaprof_lag159, gbaprof_syncs, gbaprof_lag80, gbaprof_wakes; }   /* scanline rendering time, read by gbsp/main/main.c */
+extern "C" { int64_t gbaprof_render_us, gbaprof_wait_us; u32 gbaprof_lag159, gbaprof_syncs, gbaprof_lag80, gbaprof_wakes; }
+/* wait by cause: 1/2 CPU VRAM BG/OBJ, 3/4 DMA VRAM BG/OBJ, 5 OAM, 6 palette, 7 frame end */
+extern "C" { u32 gbsp_sync_src; int64_t gbaprof_wait_by[8]; }   /* scanline rendering time, read by gbsp/main/main.c */
 #endif
 
 #ifdef RETRO_GO
@@ -2437,6 +2453,12 @@ static void render_task(void *arg)
   }
 }
 
+/* retro-go's display task is 6 on core 1: below it the LCD DMA buffers are
+   refilled as soon as they free up (the bus stays busy); since the VRAM copy,
+   a late renderer rarely makes core 0 wait */
+#ifndef GBSP_RENDER_PRIO
+#define GBSP_RENDER_PRIO 5
+#endif
 /* core 0: start the line renderer on core 1 */
 extern "C" void gbsp_render_start(void)
 {
@@ -2446,7 +2468,7 @@ extern "C" void gbsp_render_start(void)
   if (!rlines || !r_oam || !r_pal)
     abort();
   /* above retro-go's display task (6) on core 1, so core 0 rarely waits */
-  if (xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, 7, &rtask, 1) == pdPASS)
+  if (xTaskCreatePinnedToCore(render_task, "gba_render", 6144, NULL, GBSP_RENDER_PRIO, &rtask, 1) == pdPASS)
     gbsp_render_core1 = 1;
 }
 
@@ -2476,6 +2498,8 @@ extern "C" void gbsp_render_sync(void)
   __sync_synchronize();
 #ifdef GBAPROF
   gbaprof_wait_us += rg_system_timer() - t0;
+  gbaprof_wait_by[gbsp_sync_src & 7] += rg_system_timer() - t0;
+  gbsp_sync_src = 0;
 #endif
 }
 
@@ -2544,15 +2568,64 @@ static void line_ready(u32 vcount)
     render_next();
 }
 #endif
-extern "C" void gbsp_render_wait(void) { gbsp_render_sync(); }
+extern "C" void gbsp_render_wait(void)
+{
+#ifdef GBAPROF
+  gbsp_sync_src = 7;
+#endif
+  gbsp_render_sync();
+}
 
 #ifdef RETRO_GO
 extern "C" void gbsp_display_poll(void);
 #endif
+#ifdef GBSP_RVRAM
+extern "C" void gbsp_rvram_alloc(void)
+{
+  gbsp_rvram = (u8 *)heap_caps_malloc(1024 * 96, MALLOC_CAP_SPIRAM);
+  if (!gbsp_rvram)
+    abort();
+  gbsp_vram_mark_all();
+}
+extern "C" void gbsp_vram_mark_all(void)
+{
+  gbsp_vram_dirty[0] = gbsp_vram_dirty[1] = gbsp_vram_dirty[2] = 0xFFFFFFFF;
+  gbsp_vram_dirty_any = 1;
+}
+/* before a line is queued: the lines queued before the VRAM writes are drawn
+   with the old contents, then the written pages are copied */
+static void gbsp_vram_flush(void)
+{
+  if (gbsp_rq != gbsp_rd)
+  {
+#ifdef GBAPROF
+    gbsp_sync_src = 3;
+#endif
+    gbsp_render_sync();
+  }
+  for (int w = 0; w < 3; w++)
+  {
+    u32 bits = gbsp_vram_dirty[w];
+    gbsp_vram_dirty[w] = 0;
+    while (bits)
+    {
+      u32 p = w * 32 + __builtin_ctz(bits);
+      bits &= bits - 1;
+      memcpy(gbsp_rvram + p * 1024, live_vram + p * 1024, 1024);
+    }
+  }
+  gbsp_vram_dirty_any = 0;
+}
+#endif
+
 XT_HOT void update_scanline(void)
 {
   u16 dispcnt = live_ioreg(REG_DISPCNT);
   u32 vcount = live_ioreg(REG_VCOUNT);
+#ifdef GBSP_RVRAM
+  if (gbsp_vram_dirty_any && vcount < 160)
+    gbsp_vram_flush();
+#endif
 #ifdef RETRO_GO
   if ((vcount & 31) == 31)
     gbsp_display_poll();   /* a frame finished while the display was busy */
@@ -2571,7 +2644,12 @@ XT_HOT void update_scanline(void)
   {
     u32 nb = r_oam_cur ^ 1;
     if ((s32)(r_oam_last[nb] - gbsp_rd) >= 0)   /* a queued line still reads it */
+    {
+#ifdef GBAPROF
+      gbsp_sync_src = 5;
+#endif
       gbsp_render_sync();
+    }
     memcpy(r_oam[nb], oam_ram, sizeof(oam_ram));
     r_oam_cur = nb;
     r_oam_valid = true;
@@ -2581,7 +2659,12 @@ XT_HOT void update_scanline(void)
   {
     u32 nb = (r_pal_cur + 1) % R_PAL_N;
     if ((s32)(r_pal_last[nb] - gbsp_rd) >= 0)
+    {
+#ifdef GBAPROF
+      gbsp_sync_src = 6;
+#endif
       gbsp_render_sync();
+    }
     memcpy(r_pal[nb], live_pal, 512 * sizeof(u16));
     r_pal_cur = nb;
     gbsp_pal_dirty = 0;

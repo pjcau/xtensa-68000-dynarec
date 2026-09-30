@@ -427,7 +427,11 @@ void xt_emit_error(const char *what, int line)
 extern volatile u32 gbsp_rq, gbsp_rd;
 extern u8 gbsp_pal_dirty;
 void gbsp_render_sync(void);
-#define xt_vram_write() do { if (gbsp_rq != gbsp_rd) gbsp_render_sync(); } while (0)
+/* video.cpp keeps a VRAM copy for the renderer: mark the written 1 KB page
+   (a is the folded VRAM offset) */
+extern u32 gbsp_vram_dirty[3];
+extern u8 gbsp_vram_dirty_any;
+#define xt_vram_write() (gbsp_vram_dirty[a >> 15] |= 1u << ((a >> 10) & 31), gbsp_vram_dirty_any = 1)
 #define xt_pal_write()  (gbsp_pal_dirty = 1)
 #else
 #define xt_vram_write()

@@ -307,6 +307,10 @@ XT_HOT u32 function_cc update_gba(int remaining_cycles)
 
 void reset_gba(void)
 {
+#if defined(XTENSA_ARCH) && defined(RETRO_GO) && defined(ESP_PLATFORM)
+  extern void gbsp_vram_mark_all(void);   /* video.cpp: the renderer's VRAM copy */
+  gbsp_vram_mark_all();
+#endif
   init_memory();
   init_main();
   init_cpu();
