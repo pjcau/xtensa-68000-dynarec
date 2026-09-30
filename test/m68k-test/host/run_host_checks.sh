@@ -27,4 +27,15 @@ no pc exit|s/if (\*H.pc != i->next) { m68kjit_stats.exits_pc++; return; }//
 wrong cycles on ADD|s/i->cyc = H.cyc\[op\];/i->cyc = H.cyc[op] + ((op \& 0xF000) == 0xD000);/
 wrong IR (register field)|s/\*H.ir = i->op;/*H.ir = i->op ^ 1;/
 MUT
+# the same fuzz against mame-go's Musashi 3.1 and its glue, when the emulator's tree is there
+M31=${MUSASHI31_DIR:-../../../../mame-go/components/mame2000/src/cpu/m68000}
+if [ -f "$M31/m68kcpu.c" ]; then
+    S=../musashi31
+    gcc -std=c11 -O2 -w -DMAMEGO -DFUZZ_MUSASHI31 -I$S -I$M31 -I$J/include -I../main -o $O/fuzz31 \
+        fuzz_host.c ../main/fuzz.c $J/glue/glue_musashi31.c $J/m68kjit.c $J/m68kjit_len.c \
+        $S/musashi31_all.c $S/shim_dasm.c $M31/m68kops.c $M31/m68kopac.c $M31/m68kopdm.c $M31/m68kopnz.c
+    IDLESTAT=1 $O/fuzz31 ${1:-1000} 2>/dev/null | sed 's/^/MUSASHI31 /' || fail=1
+else
+    echo "MUSASHI31 skipped: no $M31 (set MUSASHI31_DIR)"
+fi
 exit $fail

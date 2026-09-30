@@ -8,6 +8,11 @@
  * valid on the 68000, illegal ones (exceptions), branches anywhere. The
  * vector table points into the ROM. Between slices the interrupt level
  * changes at random.
+ *
+ * Built against Musashi 4.5 (vendored) or, with FUZZ_MUSASHI31, against
+ * mame-go's Musashi 3.1 (see ../musashi31/README.md): then change_pc32() calls
+ * are counted and compared too, and the MAMEGO idle-loop skip runs, with an I/O
+ * window at 0xF0000-0xFFFFF.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,9 +39,20 @@ unsigned int m68k_read_memory_32(unsigned int a) { return m68k_read_memory_16(a)
 void m68k_write_memory_8(unsigned int a, unsigned int v) { if (MASK(a) >= ROM_SIZE) mem[MASK(a)] = v; }
 void m68k_write_memory_16(unsigned int a, unsigned int v) { m68k_write_memory_8(a, v >> 8); m68k_write_memory_8(a + 1, v); }
 void m68k_write_memory_32(unsigned int a, unsigned int v) { m68k_write_memory_16(a, v >> 16); m68k_write_memory_16(a + 2, v); }
+unsigned int fuzz_read16(unsigned int a) { return m68k_read_memory_16(a); }
+#ifdef FUZZ_MUSASHI31
+/* (3.1's m68kmame.h maps the disassembler reads onto the memory calls above;
+ * the generator's instruction check comes from ../musashi31/shim_dasm.c) */
+static uint32_t pcc_count, pcc_last;
+void fuzz31_change_pc(unsigned int pc) { pcc_count++; pcc_last = pc; }
+void fuzz31_idle_reset(void);
+extern unsigned int m68ki_idle_enable, m68ki_idle_io_lo, m68ki_idle_io_hi;
+#else
 unsigned int m68k_read_disassembler_8(unsigned int a) { return m68k_read_memory_8(a); }
 unsigned int m68k_read_disassembler_16(unsigned int a) { return m68k_read_memory_16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return m68k_read_memory_32(a); }
+static uint32_t pcc_count, pcc_last;
+#endif
 
 bool fuzz_translate = true;         /* false: the dynarec interprets everything (harness check) */
 /* percent of the generated instructions drawn from the forms m68kjit
@@ -86,6 +102,7 @@ typedef struct
     uint32_t reg[20];               /* D0-D7, A0-A7, PC, SR, USP, ISP */
     int32_t ret, left;
     uint32_t ram_hash;
+    uint32_t pcc_count, pcc_last;   /* change_pc32() calls (Musashi 3.1) */
 } state_t;
 
 static const m68k_register_t regs[20] = {
@@ -103,6 +120,8 @@ static void capture(state_t *s, int ret)
     uint32_t h = 2166136261u;
     for (int i = ROM_SIZE; i < MEM_SIZE; i++) h = (h ^ mem[i]) * 16777619u;
     s->ram_hash = h;
+    s->pcc_count = pcc_count;
+    s->pcc_last = pcc_last;
 }
 
 static void setup(uint32_t seed)
@@ -121,6 +140,14 @@ static void setup(uint32_t seed)
     for (uint32_t pc = 0x400; pc + 16 < ROM_SIZE;)
     {
         if (rnd() % 8 == 0) { pc += 2 * (1 + rnd() % 4); continue; }
+        if (rnd() % 64 == 0)
+        {   /* a wait loop: BTST #0,(4,PC); BEQ.S back; on a zero byte it spins
+             * until an interrupt, which is what mame-go's idle-loop skip detects */
+            static const uint8_t loop[10] = {0x08, 0x3A, 0x00, 0x00, 0x00, 0x04, 0x67, 0xF8, 0x00, 0x00};
+            memcpy(&mem[pc], loop, 10);
+            pc += 10;
+            continue;
+        }
         uint16_t op;
         bool nat = (int)(rnd() % 100) < fuzz_native_bias;
         do op = nat ? native_form() : rnd(); while (!m68k_is_valid_instruction(op, M68K_CPU_TYPE_68000) || (op >> 12) == 0xA || (op >> 12) == 0xF
@@ -152,7 +179,15 @@ int fuzz_init(void)
     mem = fuzz_alloc(MEM_SIZE);
     snap_mem = fuzz_alloc(MEM_SIZE);
     if (!mem || !snap_mem || m68k_context_size() > sizeof(snap_ctx)) return -1;
+#ifdef FUZZ_MUSASHI31
+#ifndef FUZZ_NO_IDLE
+    m68ki_idle_enable = 1;
+#endif
+    m68ki_idle_io_lo = 0xF0000;
+    m68ki_idle_io_hi = 0xFFFFF;
+#else
     m68k_init();
+#endif
     m68k_set_cpu_type(M68K_CPU_TYPE_68000);
     return glue_jit_init(is_code, read_code16) ? 0 : -1;
 }
@@ -170,12 +205,20 @@ int fuzz_seed(uint32_t seed, int slices, bool verbose)
     memcpy(snap_mem, mem, MEM_SIZE);
 
     m68ki_remaining_cycles = m68ki_initial_cycles = 0;
+    pcc_count = pcc_last = 0;
+#ifdef FUZZ_MUSASHI31
+    fuzz31_idle_reset();
+#endif
     for (int s = 0; s < slices; s++) { m68k_set_irq(irq[s]); capture(&a[s], m68k_execute(cyc[s])); }
 
     m68k_set_context(snap_ctx);
     memcpy(mem, snap_mem, MEM_SIZE);
     m68kjit_flush();
     m68ki_remaining_cycles = m68ki_initial_cycles = 0;
+    pcc_count = pcc_last = 0;
+#ifdef FUZZ_MUSASHI31
+    fuzz31_idle_reset();
+#endif
     for (int s = 0; s < slices; s++) { m68k_set_irq(irq[s]); capture(&b[s], glue_jit_execute(cyc[s])); }
 
     for (int s = 0; s < slices; s++)
@@ -189,6 +232,8 @@ int fuzz_seed(uint32_t seed, int slices, bool verbose)
             if (a[s].ret != b[s].ret) printf(" ret %d/%d", (int)a[s].ret, (int)b[s].ret);
             if (a[s].left != b[s].left) printf(" left %d/%d", (int)a[s].left, (int)b[s].left);
             if (a[s].ram_hash != b[s].ram_hash) printf(" ram");
+            if (a[s].pcc_count != b[s].pcc_count || a[s].pcc_last != b[s].pcc_last)
+                printf(" change_pc %u:%06X/%u:%06X", (unsigned)a[s].pcc_count, (unsigned)a[s].pcc_last, (unsigned)b[s].pcc_count, (unsigned)b[s].pcc_last);
             printf("  (interpreter/jit)\n");
         }
         return 1;

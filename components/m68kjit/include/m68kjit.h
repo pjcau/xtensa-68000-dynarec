@@ -32,13 +32,22 @@ typedef struct
     const uint8_t *cyc;                     /* opcode -> base cycles (65536) */
     /* cycle adjustments of the CPU type (Musashi's USE_CYCLES(CYC_...), may be < 0) */
     int cyc_bcc_notake_b, cyc_bcc_notake_w, cyc_dbcc_f_noexp, cyc_dbcc_f_exp;
-    int cyc_shift;                          /* a shift by n costs n << cyc_shift more */
+    int cyc_shift;                          /* a shift by n costs n << cyc_shift more... */
+    bool shift_imm_plain;                   /* ...but not a shift by #n (Musashi 3.1) */
     int cyc_movem_w, cyc_movem_l;           /* MOVEM: registers << these, more */
+    bool dbf_plain;                         /* DBF adds no cyc_dbcc_f_* (Musashi 3.1's m68k_op_dbf_16) */
     /* MOVE.l / MOVEM.l to -(An) as two 16-bit writes, low word first (Musashi 4.x) */
     bool pd_long_split16;
     /* memory as the interpreter's instructions see it (address mask, function code) */
     uint32_t (*read8)(uint32_t), (*read16)(uint32_t), (*read32)(uint32_t);
     void (*write8)(uint32_t, uint32_t), (*write16)(uint32_t, uint32_t), (*write32)(uint32_t, uint32_t);
+    /* optional hooks of the emulator's Musashi (NULL when it has none):
+     * branch_back: after a taken branch that goes back by 1..32 bytes, with PPC
+     *   and PC set, before its cycles (mame-go's idle-loop check, which may
+     *   give the rest of the time slice away);
+     * pc_changed: after a jump (JSR, RTS), as m68ki_jump() does */
+    void (*branch_back)(void);
+    void (*pc_changed)(uint32_t pc);
     /* one interpreter step (fetch, handler, cycles) for code not translated */
     void (*step)(void);
     /* code the translator may read: true if [addr, addr + len) is fixed code (ROM) */

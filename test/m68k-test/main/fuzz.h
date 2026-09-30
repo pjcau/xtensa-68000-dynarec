@@ -12,7 +12,11 @@ extern int fuzz_form;
 int fuzz_init(void);
 int fuzz_seed(uint32_t seed, int slices, bool verbose);
 
-/* glue_musashi.c */
+/* glue_musashi.c (Musashi 4.5) or components/m68kjit/glue/glue_musashi31.c (mame-go) */
+#ifdef FUZZ_MUSASHI31
+#define glue_jit_init glue31_jit_init
+#define glue_jit_execute glue31_jit_execute
+#endif
 bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint32_t));
 int glue_jit_execute(int num_cycles);
 

@@ -19,6 +19,9 @@ void app_main(void)
     printf("M68K harness (no translation) 20 seeds, %d mismatches\n", hbad);
     fuzz_translate = true;
     int n = 300, bad = 0;
+#ifdef FUZZ_FORMS_ONLY
+    n = 0;
+#endif
     int64_t t0 = esp_timer_get_time();
     for (int i = 0; i < n; i++)
     {
@@ -31,6 +34,9 @@ void app_main(void)
     /* the same with the ROM mostly made of the natively translated forms */
     fuzz_native_bias = 85;
     bad = 0;
+#ifdef FUZZ_FORMS_ONLY
+    n = 0;
+#endif
     uint32_t nat0 = m68kjit_stats.native, runs0 = m68kjit_stats.block_runs;
     for (int i = 0; i < n; i++)
         if (fuzz_seed(1001 + i, 32, bad < 20)) bad++;

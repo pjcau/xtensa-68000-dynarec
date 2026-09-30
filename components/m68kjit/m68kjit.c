@@ -400,6 +400,10 @@ static bool classify(const insn_t *i, nat_t *n)
             n->alu = line == 0x9 ? A_SUB : line == 0xD ? A_ADD : A_CMP;
             if (reg_src(i, n->size, true, n)) return true;
             if (mem_ea(mode, ry, i->pc + 2, false, &n->mem) < 0) return false;
+            /* ADDA/SUBA (Ay)+ / -(Ay) into the same Ay: Musashi 3.1 writes these
+             * as *r_dst = *r_dst + OPER_...(), whose value depends on the
+             * compiler's evaluation order: the handler decides */
+            if ((n->mem.kind == O_PI || n->mem.kind == O_PD) && n->mem.reg == n->dst) return false;
             n->kind = N_ALUA_M; n->pc_read = i->next;
             return true;
         }
@@ -907,6 +911,18 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         xjb_imm(b, 6, i->next);
         emit_write(b, 6, SZ_L);
         xj_s32i(e, 7, 2, o_pc);                             /* (a PC changed by the write is overwritten, as in Musashi) */
+        if (n->kind == N_BSR && H.branch_back && n->target < i->pc && i->pc - n->target <= 32)
+        {                                                   /* m68ki_branch_8/16 */
+            xj_s32i(e, 5, 2, o_ppc);
+            xjb_lit(b, 8, (uint32_t)(uintptr_t)H.branch_back);
+            xj_callx8(e, 8);
+        }
+        else if (n->kind == N_JSR && H.pc_changed)          /* m68ki_jump */
+        {
+            xj_mov(e, 10, 7);
+            xjb_lit(b, 8, (uint32_t)(uintptr_t)H.pc_changed);
+            xj_callx8(e, 8);
+        }
         break;
     case N_RTS:                                             /* SP += 4; PC = read(SP - 4) */
         emit_pc(b, i->next, &stored);
@@ -915,6 +931,11 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         xj_s32i(e, 9, 2, o_r(15));
         emit_read(b, SZ_L);
         xj_s32i(e, 10, 2, o_pc);
+        if (H.pc_changed)                                   /* m68ki_jump */
+        {
+            xjb_lit(b, 8, (uint32_t)(uintptr_t)H.pc_changed);
+            xj_callx8(e, 8);                                /* a10: the new PC */
+        }
         break;
     case N_MOVEM:
     {
@@ -1023,6 +1044,22 @@ static void emit_cond(xj_block_t *b, int cc, int label)
     }
 }
 
+/* a taken branch from pc to target: PPC = pc, PC = target and, for a short
+ * backward branch, the emulator's branch_back hook (before the cycles, as in
+ * Musashi's m68ki_branch_8/16) */
+static void emit_taken(xj_block_t *b, uint32_t pc, uint32_t target)
+{
+    xj_emit_t *e = &b->e;
+    xjb_imm(b, 7, target);
+    xj_s32i(e, 7, 2, o_pc);
+    if (H.branch_back && target < pc && pc - target <= 32)
+    {
+        xj_s32i(e, 5, 2, o_ppc);                        /* a5 = pc of the branch */
+        xjb_lit(b, 8, (uint32_t)(uintptr_t)H.branch_back);
+        xj_callx8(e, 8);
+    }
+}
+
 /* PC is stored and is the target, a6 = cycles: leave, through the slot of
  * this exit when cycles are left (the next block runs straight away, as it
  * would from m68kjit_run()) */
@@ -1115,12 +1152,12 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 xjb_imm(b, 9, 0xFFFF);
                 int expired = xjb_label(b);
                 xjb_b8(b, xj_beq, 8, 9, expired);
-                emit_cycles(e, i->cyc + H.cyc_dbcc_f_noexp);
-                xjb_imm(b, 7, nat.target);
-                xj_s32i(e, 7, 2, o_pc);
+                bool plain = nat.cc == 1 && H.dbf_plain;
+                emit_taken(b, i->pc, nat.target);
+                emit_cycles(e, i->cyc + (plain ? 0 : H.cyc_dbcc_f_noexp));
                 emit_chain(b);
                 xjb_bind(b, expired);
-                emit_cycles(e, i->cyc + H.cyc_dbcc_f_exp);
+                emit_cycles(e, i->cyc + (plain ? 0 : H.cyc_dbcc_f_exp));
                 int go = xjb_label(b);
                 xjb_j(b, go);
                 xjb_bind(b, fall);
@@ -1135,9 +1172,8 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 int go = xjb_label(b);
                 xjb_j(b, go);
                 xjb_bind(b, taken);
+                emit_taken(b, i->pc, nat.target);
                 emit_cycles(e, i->cyc);
-                xjb_imm(b, 7, nat.target);
-                xj_s32i(e, 7, 2, o_pc);
                 emit_chain(b);
                 xjb_bind(b, go);
             }
@@ -1192,7 +1228,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         {
             m68kjit_stats.native++;
             emit_native(b, i, &nat);
-            emit_cycles(e, i->cyc + (nat.kind == N_SHIFT ? (int)nat.simm << H.cyc_shift : 0));
+            emit_cycles(e, i->cyc + (nat.kind == N_SHIFT && !H.shift_imm_plain ? (int)nat.simm << H.cyc_shift : 0));
             if (last)
             {
                 xj_addi(e, 7, 5, len);

@@ -26,7 +26,9 @@ interpreter today, and there the CPU is most of the cost. How the frontend works
 | 8e | Memory operands | QEMU | done |
 | 8f | Indexed modes, PEA/JSR/BSR/RTS, shifts, MOVEM | QEMU | done |
 | 8g | Block chaining | QEMU | done |
-| 9 | mame-go (Neo Geo, CPS1): Musashi 3.1 glue, build switch, fallback, speed guard, games on the board with the webcam | board | next |
+| 9a | Glue for mame-go's Musashi 3.1; the fuzz against it (PC and QEMU, idle-loop skip included) | PC + QEMU | done |
+| 9b | mame-go behind `M68KJIT`: fixed-ROM ranges from the 68000's read map, partition room | board at the end | in progress |
+| 9c-9g | Board correctness (same frame hashes), speed, fallback and speed guard, compatibility with the webcam, docs | board | |
 | 10 | gwenesis (Mega Drive), if it helps there (the VDP is its main cost) | board | |
 
 Lessons from the GBA that apply: hot C helpers in IRAM, core-1 work out of core

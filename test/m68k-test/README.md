@@ -42,5 +42,17 @@ exits. Before a change is committed, one deliberate bug in the code it touches
 must make this fail (see `docs/m68k.md`, Verification).
 `-DCMAKE_C_FLAGS=-DM68KJIT_TRACE` prints the first block runs.
 
+## Against mame-go's Musashi 3.1
+
+    MUSASHI31_DIR=<retro-go>/mame-go/components/mame2000/src/cpu/m68000 \
+        ./docker.sh "idf.py -B build31 -DSDKCONFIG=build31/sdkconfig build && B=build31 ./qemu.sh 1000"
+
+builds the same app against that Musashi and `components/m68kjit/glue/glue_musashi31.c`
+(see `musashi31/README.md`); the host checks run it too when the tree is there.
+The state compared then includes the `change_pc32()` calls, mame-go's idle-loop
+skip runs (with an I/O window), and the ROM holds wait loops
+(`BTST #0,(4,PC)` / `BEQ.S` back) that trigger it. 2026-10-01: 0 mismatches in
+every pass; turning `dbf_plain` off is caught.
+
 Musashi 4.5's opcode and cycle tables (~800 KB) live in PSRAM here
 (`main/linker.lf`); the emulators keep their own Musashi.

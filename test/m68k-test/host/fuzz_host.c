@@ -19,5 +19,8 @@ int main(int argc, char **argv)
     printf("FUZZ %d seeds, %d mismatches; blocks %u insns %u runs %u (%u insns) steps %u exits pc %u cycles %u\n",
            n, bad, m68kjit_stats.blocks, m68kjit_stats.insns, m68kjit_stats.block_runs, m68kjit_stats.block_insns,
            m68kjit_stats.steps, m68kjit_stats.exits_pc, m68kjit_stats.exits_cycles);
+#ifdef FUZZ_MUSASHI31
+    { extern unsigned int fuzz31_idle_skips(void); printf("FUZZ idle-loop skips seen (IDLESTAT=1): %u\n", fuzz31_idle_skips()); }
+#endif
     return bad != 0;
 }

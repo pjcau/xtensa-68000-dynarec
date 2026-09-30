@@ -1,0 +1,7 @@
+# Musashi 3.1 build: its opcode table and the disassembler's go to PSRAM
+[mapping:musashi31_extram]
+archive: libmain.a
+entries:
+    musashi31_all (extram_bss)
+    shim_dasm (extram_bss)
+    m68kops (extram_bss)
