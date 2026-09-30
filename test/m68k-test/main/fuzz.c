@@ -38,7 +38,8 @@ unsigned int m68k_read_disassembler_8(unsigned int a) { return m68k_read_memory_
 unsigned int m68k_read_disassembler_16(unsigned int a) { return m68k_read_memory_16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return m68k_read_memory_32(a); }
 
-static bool is_code(uint32_t a, int len) { return a < ROM_SIZE && a + len <= ROM_SIZE; }
+bool fuzz_translate = true;         /* false: the dynarec interprets everything (harness check) */
+static bool is_code(uint32_t a, int len) { return fuzz_translate && a < ROM_SIZE && a + len <= ROM_SIZE; }
 static uint16_t read_code16(uint32_t a) { return m68k_read_memory_16(a); }
 
 typedef struct

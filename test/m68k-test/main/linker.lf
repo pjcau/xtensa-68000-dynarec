@@ -1,0 +1,8 @@
+# Musashi 4.5's tables (opcode handlers 256 KB, cycles per CPU type, the disassembler's
+# 256 KB) do not fit internal RAM: their .bss goes to PSRAM
+[mapping:musashi_extram]
+archive: libmain.a
+entries:
+    m68kops (extram_bss)
+    m68kdasm (extram_bss)
+    m68kcpu (extram_bss)
