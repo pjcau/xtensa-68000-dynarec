@@ -386,6 +386,7 @@ FILE *gamepak_file_large = NULL;
 u32 gbc_sound_wave_update = 0;
 
 u32 backup_type = BACKUP_UNKN;
+u8 gamepak_backup_dirty;   /* set on every backup write: the app saves the .sram file */
 u32 backup_type_reset = BACKUP_UNKN;
 u32 flash_mode = FLASH_BASE_MODE;
 u32 flash_command_position = 0;
@@ -493,6 +494,7 @@ u32 eeprom_counter = 0;
 
 void function_cc write_eeprom(u32 unused_address, u32 value)
 {
+  gamepak_backup_dirty = 1;
   switch(eeprom_mode)
   {
     case EEPROM_BASE_MODE:
@@ -1051,6 +1053,7 @@ extern u8 gbsp_pal_dirty;   /* video.cpp: the renderer copies the palette */
 
 void function_cc write_backup(u32 address, u32 value)
 {
+  gamepak_backup_dirty = 1;
   value &= 0xFF;
 
   if(backup_type == BACKUP_EEPROM)
