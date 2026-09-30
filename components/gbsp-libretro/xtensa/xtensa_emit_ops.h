@@ -1311,6 +1311,13 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 #define arm_hle_div(cpu_mode)     xt_call(XT_FN_HLE_DIV)
 #define arm_hle_div_arm(cpu_mode) xt_call(XT_FN_HLE_DIV_ARM)
 
+/* the m4a mixer loop head (cpu.cpp): run it natively, or go on here */
+#define xt_m4a_hook(hook_pc)                                                  \
+  generate_load_pc(a0, (hook_pc));                                            \
+  XT(s32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);                            \
+  xt_call(XT_FN_M4A);                                                         \
+  xt_jump_if_redirect()
+
 #define generate_translation_gate(type)                                       \
   generate_load_pc(a0, pc);                                                   \
   generate_indirect_branch_no_cycle_update(type)                              \

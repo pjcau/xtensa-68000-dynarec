@@ -1422,7 +1422,7 @@ cpu_alert_type check_interrupt() {
 
 // Checks for pending IRQs and raises them. This changes the CPU mode
 // which means that it must be called with a valid CPU state.
-u32 check_and_raise_interrupts()
+XT_HOT u32 check_and_raise_interrupts()
 {
   // Check any IRQ flag pending, IME and CPSR-IRQ enabled
   if (cpu_has_interrupt())
@@ -1519,6 +1519,27 @@ extern "C" void pchist_dump(int top)
 
 #ifdef RETRO_GO
 #include "m4a_hle.h"
+#ifdef HAVE_DYNAREC
+/* the Xtensa dynarec runs the m4a mixer loop natively too (xtensa_stub.c):
+   a translated instruction at a loop head calls m4a_dynarec_run first */
+extern "C" int m4a_dynarec_head(u32 pc) { return pc == m4a_pc_out || pc == m4a_pc_in; }
+extern "C" void m4a_dynarec_check(void)
+{
+  u32 out = m4a_pc_out;
+  m4a_check();
+  if (m4a_pc_out != out)
+    flush_translation_cache_ram();   /* retranslate with the hook at the new loop */
+}
+/* ~0: not handled (the translated code goes on); else the next PC */
+extern "C" u32 m4a_dynarec_run(u32 pc, s32 *cycles)
+{
+  u32 n = reg[REG_N_FLAG], z = reg[REG_Z_FLAG], c = reg[REG_C_FLAG], v = reg[REG_V_FLAG];
+  if (!m4a_run(pc, *cycles, n, z, c, v))
+    return 0xFFFFFFFF;
+  reg[REG_N_FLAG] = n; reg[REG_Z_FLAG] = z; reg[REG_C_FLAG] = c; reg[REG_V_FLAG] = v;
+  return pc;
+}
+#endif
 #endif
 
 IRAM_ATTR void execute_arm(u32 cycles)

@@ -26,6 +26,7 @@ extern u32 rom_cache_watermark;
 
 #if defined(ESP_PLATFORM)
 #include "esp_cache.h"
+#include "esp_cpu.h"
 #include "esp_attr.h"
 #define XT_EXT_BSS EXT_RAM_BSS_ATTR
 #else
@@ -43,7 +44,7 @@ u16 palette_ram_converted[512];
 XT_EXT_BSS u8 ewram[(1024 * 256) << SMC_DETECTION];
 XT_EXT_BSS u8 vram[1024 * 96];
 #endif
-XT_EXT_BSS u8 iwram[(1024 * 32) << SMC_DETECTION];
+u8 iwram[(1024 * 32) << SMC_DETECTION];   /* internal RAM: the game's stack and hot code */
 u8 *memory_map_read[8 * 1024];
 u16 io_registers[512];
 
@@ -117,7 +118,9 @@ u8 *xto_mov(u8 *p, int a0, int a1)
 {
   xj_emit_t e;
   xj_init(&e, p, 16);
-  xj_mov(&e, a0, a1);
+  if (a0 == a1)
+    return p;
+  xj_mov_n(&e, a0, a1);   /* density forms: the code is fetched from PSRAM */
   if (!xj_ok(&e)) xt_emit_error("mov", 0);
   return p + e.pos;
 }
@@ -126,7 +129,10 @@ u8 *xto_movi(u8 *p, int a0, int a1)
 {
   xj_emit_t e;
   xj_init(&e, p, 16);
-  xj_movi(&e, a0, a1);
+  if (a1 >= -32 && a1 <= 95)
+    xj_movi_n(&e, a0, a1);
+  else
+    xj_movi(&e, a0, a1);
   if (!xj_ok(&e)) xt_emit_error("movi", 0);
   return p + e.pos;
 }
@@ -216,7 +222,7 @@ u8 *xto_add(u8 *p, int a0, int a1, int a2)
 {
   xj_emit_t e;
   xj_init(&e, p, 16);
-  xj_add(&e, a0, a1, a2);
+  xj_add_n(&e, a0, a1, a2);
   if (!xj_ok(&e)) xt_emit_error("add", 0);
   return p + e.pos;
 }
@@ -225,7 +231,12 @@ u8 *xto_addi(u8 *p, int a0, int a1, int a2)
 {
   xj_emit_t e;
   xj_init(&e, p, 16);
-  xj_addi(&e, a0, a1, a2);
+  if (a2 == 0)
+    return xto_mov(p, a0, a1);
+  if (a2 == -1 || (a2 >= 1 && a2 <= 15))
+    xj_addi_n(&e, a0, a1, a2);
+  else
+    xj_addi(&e, a0, a1, a2);
   if (!xj_ok(&e)) xt_emit_error("addi", 0);
   return p + e.pos;
 }
@@ -252,7 +263,10 @@ u8 *xto_l32i(u8 *p, int a0, int a1, int a2)
 {
   xj_emit_t e;
   xj_init(&e, p, 16);
-  xj_l32i(&e, a0, a1, a2);
+  if (a2 >= 0 && a2 <= 60 && !(a2 & 3))
+    xj_l32i_n(&e, a0, a1, a2);
+  else
+    xj_l32i(&e, a0, a1, a2);
   if (!xj_ok(&e)) xt_emit_error("l32i", 0);
   return p + e.pos;
 }
@@ -261,7 +275,10 @@ u8 *xto_s32i(u8 *p, int a0, int a1, int a2)
 {
   xj_emit_t e;
   xj_init(&e, p, 16);
-  xj_s32i(&e, a0, a1, a2);
+  if (a2 >= 0 && a2 <= 60 && !(a2 & 3))
+    xj_s32i_n(&e, a0, a1, a2);
+  else
+    xj_s32i(&e, a0, a1, a2);
   if (!xj_ok(&e)) xt_emit_error("s32i", 0);
   return p + e.pos;
 }
@@ -439,7 +456,7 @@ static u32 lookup_pc(void)
 static u32 xt_exit(void) { return XT_EXEC(xt_exit_stub); }
 
 /* x86_update_gba */
-static u32 xt_update_gba(u32 pc)
+XT_HOT static u32 xt_update_gba(u32 pc)
 {
   u32 r;
   reg[REG_PC] = pc;
@@ -453,18 +470,22 @@ static u32 xt_update_gba(u32 pc)
   return 0;
 }
 
-static u32 xt_indirect_arm(u32 address)   { return XT_EXEC(block_lookup_address_arm(address)); }
-static u32 xt_indirect_thumb(u32 address) { return XT_EXEC(block_lookup_address_thumb(address)); }
-static u32 xt_indirect_dual(u32 address)  { return XT_EXEC(block_lookup_address_dual(address)); }
+XT_HOT static u32 xt_indirect_arm(u32 address)   { return XT_EXEC(block_lookup_address_arm(address)); }
+XT_HOT static u32 xt_indirect_thumb(u32 address) { return XT_EXEC(block_lookup_address_thumb(address)); }
+XT_HOT static u32 xt_indirect_dual(u32 address)  { return XT_EXEC(block_lookup_address_dual(address)); }
 
 /* ---- memory: loads (x86 load_stubs) -------------------------------------- */
 #define rd8(p)  (*(const u8 *)(p))
-#define rd16(p) ({ u16 _v; memcpy(&_v, (p), 2); _v; })
-#define rd32(p) ({ u32 _v; memcpy(&_v, (p), 4); _v; })
+/* the masks keep every access aligned (unaligned ones take the slow path):
+   plain loads, no memcpy (ESP-IDF builds with -fno-builtin-memcpy) */
+#define rd16(p) (*(const u16 *)(p))
+#define rd32(p) (*(const u32 *)(p))
+#define wr16(p, v) (*(u16 *)(p) = (v))
+#define wr32(p, v) (*(u32 *)(p) = (v))
 
 /* the region, or 16+ when unaligned for this width (-> the C slow path) */
 #define XT_LOAD(name, type, width, almask, slowfn)                           \
-static u32 xt_load_##name(u32 address, u32 pc)                               \
+XT_HOT static u32 xt_load_##name(u32 address, u32 pc)                               \
 {                                                                            \
   u32 r = address >> 24;                                                     \
   if (r > 15 || (address & (almask)))                                        \
@@ -501,7 +522,7 @@ XT_LOAD(s8, s8, 8, 0, read_memory8s)
 
 /* ---- memory: stores (x86 write_stubs) ------------------------------------ */
 /* write_epilogue: act on the alerts of an I/O write, then go on at reg[PC] */
-static u32 xt_write_epilogue(u32 alert)
+XT_HOT static u32 xt_write_epilogue(u32 alert)
 {
   collapse_flags();
   if (alert & CPU_ALERT_SMC)
@@ -517,42 +538,42 @@ static u32 xt_write_epilogue(u32 alert)
   }
   return lookup_pc();
 }
-static u32 xt_smc_write(void)
+XT_HOT static u32 xt_smc_write(void)
 {
   flush_translation_cache_ram();
   return lookup_pc();
 }
 
 /* palette: the x86 stub's conversion (bit 15 lands in green's low bit) */
-static void xt_store_palette16b(u32 a, u32 v)
+XT_HOT static void xt_store_palette16b(u32 a, u32 v)
 {
   u32 c;
   v &= 0xFFFF;
-  memcpy((u8 *)palette_ram + a, &(u16){v}, 2);
+  ((u8 *)palette_ram)[a] = v; ((u8 *)palette_ram)[a + 1] = v >> 8;   /* may be odd */
   c = ((v << 11) & 0xF800) | ((v & 0x03E0) << 1) | ((v >> 10) & 0x3F);
-  memcpy((u8 *)palette_ram_converted + a, &(u16){c}, 2);
+  ((u8 *)palette_ram_converted)[a] = c; ((u8 *)palette_ram_converted)[a + 1] = c >> 8;
   xt_pal_write();
 }
-static void xt_store_vram16(u32 a, u32 v)
+XT_HOT static void xt_store_vram16(u32 a, u32 v)
 {
   if (a >= 0x18000) a -= 0x8000;
   xt_vram_write();
-  memcpy(&vram[a], &(u16){v}, 2);
+  wr16(&vram[a], v);
 }
 
-static u32 xt_store_u32(u32 address, u32 value)
+XT_HOT static u32 xt_store_u32(u32 address, u32 value)
 {
   u32 a;
   switch (address >> 24)
   {
   case 2:
     a = address & 0x3FFFC;
-    memcpy(&ewram[a], &value, 4);
+    wr32(&ewram[a], value);
     if (rd32(&ewram[a + 0x40000])) return xt_smc_write();
     return 0;
   case 3:
     a = address & 0x7FFC;
-    memcpy(&iwram[0x8000 + a], &value, 4);
+    wr32(&iwram[0x8000 + a], value);
     if (rd32(&iwram[a])) return xt_smc_write();
     return 0;
   case 4:
@@ -569,42 +590,42 @@ static u32 xt_store_u32(u32 address, u32 value)
     a = address & 0x1FFFC;
     if (a >= 0x18000) a -= 0x8000;
     xt_vram_write();
-    memcpy(&vram[a], &value, 4);
+    wr32(&vram[a], value);
     return 0;
   case 7:
     reg[OAM_UPDATED] = 1;
-    memcpy((u8 *)oam_ram + (address & 0x3FC), &value, 4);
+    wr32((u8 *)oam_ram + (address & 0x3FC), value);
     return 0;
   }
   return 0;   /* BIOS, gamepak, EEPROM/backup (32-bit): ignored */
 }
 
-static u32 xt_store_aligned_u32(u32 address, u32 value)
+XT_HOT static u32 xt_store_aligned_u32(u32 address, u32 value)
 {
   u32 a;
   switch (address >> 24)
   {
-  case 2: a = address & 0x3FFFC; memcpy(&ewram[a], &value, 4); return 0;   /* no SMC check */
-  case 3: a = address & 0x7FFC; memcpy(&iwram[0x8000 + a], &value, 4); return 0;
+  case 2: a = address & 0x3FFFC; wr32(&ewram[a], value); return 0;   /* no SMC check */
+  case 3: a = address & 0x7FFC; wr32(&iwram[0x8000 + a], value); return 0;
   case 4: case 5: case 6: case 7:
     return xt_store_u32(address, value);
   }
   return 0;
 }
 
-static u32 xt_store_u16(u32 address, u32 value)
+XT_HOT static u32 xt_store_u16(u32 address, u32 value)
 {
   u32 a;
   switch (address >> 24)
   {
   case 2:
     a = address & 0x3FFFE;
-    memcpy(&ewram[a], &(u16){value}, 2);
+    wr16(&ewram[a], value);
     if (rd16(&ewram[a + 0x40000])) return xt_smc_write();
     return 0;
   case 3:
     a = address & 0x7FFE;
-    memcpy(&iwram[0x8000 + a], &(u16){value}, 2);
+    wr16(&iwram[0x8000 + a], value);
     if (rd16(&iwram[a])) return xt_smc_write();
     return 0;
   case 4:
@@ -616,7 +637,7 @@ static u32 xt_store_u16(u32 address, u32 value)
   case 6: xt_store_vram16(address & 0x1FFFE, value); return 0;
   case 7:
     reg[OAM_UPDATED] = 1;
-    memcpy((u8 *)oam_ram + (address & 0x3FE), &(u16){value}, 2);
+    wr16((u8 *)oam_ram + (address & 0x3FE), value);
     return 0;
   case 8: write_gpio(address & 0xFF, value & 0xFFFF); return 0;
   case 13: write_eeprom(address, value); return 0;
@@ -624,7 +645,7 @@ static u32 xt_store_u16(u32 address, u32 value)
   return 0;
 }
 
-static u32 xt_store_u8(u32 address, u32 value)
+XT_HOT static u32 xt_store_u8(u32 address, u32 value)
 {
   u32 a, d = (value & 0xFF) | ((value & 0xFF) << 8);   /* 16-bit bus: the byte twice */
   switch (address >> 24)
@@ -648,7 +669,7 @@ static u32 xt_store_u8(u32 address, u32 value)
   case 6: xt_store_vram16(address & 0x1FFFE, d); return 0;
   case 7:
     reg[OAM_UPDATED] = 1;
-    memcpy((u8 *)oam_ram + (address & 0x3FE), &(u16){d}, 2);
+    wr16((u8 *)oam_ram + (address & 0x3FE), d);
     return 0;
   case 14: write_backup(address & 0xFFFF, value & 0xFF); return 0;
   }
@@ -751,16 +772,45 @@ static void xt_hle_div_common(s32 num, s32 den)
 static void xt_hle_div(void)     { xt_hle_div_common(reg[0], reg[1]); }
 static void xt_hle_div_arm(void) { xt_hle_div_common(reg[1], reg[0]); }
 
+/* ---- m4a mixer (cpu.cpp, RETRO_GO) ------------------------------------------- */
+#ifdef RETRO_GO
+u32 m4a_dynarec_run(u32 pc, s32 *cycles);
+void m4a_dynarec_check(void);
+static u32 xt_m4a(u32 pc)
+{
+  s32 cycles = (s32)reg[XT_CYC_SLOT];
+  u32 next = m4a_dynarec_run(pc, &cycles);
+  if (next == 0xFFFFFFFF)
+    return 0;
+  reg[XT_CYC_SLOT] = cycles;
+  return XT_EXEC(block_lookup_address_arm(next));
+}
+#else
+static u32 xt_m4a(u32 pc) { return 0; }
+#endif
+
 /* ---- caches ------------------------------------------------------------------ */
+#ifdef GBAPROF
+u32 xt_prof_syncs, xt_prof_sync_cycles;
+#endif
 void platform_cache_sync(void *baseaddr, void *endptr)
 {
 #if defined(ESP_PLATFORM)
   uintptr_t a = (uintptr_t)baseaddr & ~(uintptr_t)63, b = ((uintptr_t)endptr + 63) & ~(uintptr_t)63;
   if (b <= a)
     return;
+#ifdef GBAPROF
+  u32 t0 = esp_cpu_get_cycle_count();
+#endif
+#ifndef XT_IRAM_CACHE   /* internal RAM: no cache in the way */
   esp_cache_msync((void *)a, b - a, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
   esp_cache_msync((void *)(a + xt_exec_delta), b - a, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_INST);
+#endif
   __asm__ volatile("memw; isync");
+#ifdef GBAPROF
+  xt_prof_syncs++;
+  xt_prof_sync_cycles += esp_cpu_get_cycle_count() - t0;
+#endif
 #endif
 }
 
@@ -791,6 +841,7 @@ void init_emitter(bool must_swap)
     [XT_FN_PROCESS_CHEATS] = process_cheats,
     [XT_FN_HLE_DIV] = xt_hle_div,
     [XT_FN_HLE_DIV_ARM] = xt_hle_div_arm,
+    [XT_FN_M4A] = xt_m4a,
   };
   for (int i = 0; i < XT_FN_COUNT; i++)
     reg[XT_FN_SLOT + i] = (u32)(uintptr_t)fn[i];
@@ -816,6 +867,9 @@ void init_emitter(bool must_swap)
 u32 execute_arm_translate(u32 cycles)
 {
   u32 target;
+#ifdef RETRO_GO
+  m4a_dynarec_check();   /* once a frame, as execute_arm does */
+#endif
   extract_flags_regs();
   reg[XT_CYC_SLOT] = cycles;
   if (reg[CPU_HALT_STATE])

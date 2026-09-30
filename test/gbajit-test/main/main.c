@@ -7,6 +7,7 @@
  * run.sh builds, puts the ROM and the state into the flash image and runs
  * QEMU. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -174,6 +175,19 @@ static void run(void *arg)
         uint32_t h = 2166136261u;
         for (int i = 0; i < GBA_SCREEN_WIDTH * GBA_SCREEN_HEIGHT; i++) h = (h ^ screen[i]) * 16777619u;
         acc = acc * 31 + h;
+#if defined(HAVE_DYNAREC) && defined(XTDUMP)
+        if (f == 299)   /* host code sample (-DXTDUMP): 4 KB from the middle of the ROM cache, "GBAJITDUMP addr bytes" */
+        {
+            u32 used = rom_translation_ptr - rom_translation_cache, from = (used / 2) & ~3u;
+            printf("GBAJIT code used %u bytes\n", (unsigned)used);
+            for (u32 i = 0; i < 4096; i += 32)
+            {
+                printf("GBAJITDUMP %08x", (unsigned)(xt_exec_delta + (u32)(uintptr_t)rom_translation_cache + from + i));
+                for (int k = 0; k < 32; k++) printf(" %02x", rom_translation_cache[from + i + k]);
+                printf("\n");
+            }
+        }
+#endif
         if ((f + 1) % 300 == 0)
             printf("GBAJIT frames %d hash %08lx audio %08lx (%.1f ms/frame)\n", f + 1, (unsigned long)acc, (unsigned long)ahash,
                    (esp_timer_get_time() - t0) / 1000.0 / (f + 1));

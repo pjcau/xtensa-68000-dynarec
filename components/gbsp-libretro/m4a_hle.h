@@ -57,7 +57,7 @@ static void m4a_set(u32 kind, u32 base, const u32 *w, int ble)
    it is not found */
 static void m4a_check(void)
 {
-  const u32 *iw = (const u32 *)iwram;
+  const u32 *iw = (const u32 *)(iwram + 0x8000 * SMC_DETECTION);   /* the code, past the dynarec's SMC tags */
   if (m4a_disable)
     return;
   if (m4a_kind)
@@ -98,7 +98,7 @@ static inline void m4a_wr32(u32 a, u32 v)
   if ((a >> 24) == 0x02)
     address32(ewram, a & 0x3FFFF) = eswap32(v);
   else
-    address32(iwram, a & 0x7FFF) = eswap32(v);
+    address32(iwram, (a & 0x7FFF) + 0x8000 * SMC_DETECTION) = eswap32(v);
 }
 
 #ifdef GBAPROF
@@ -119,7 +119,7 @@ static inline void m4a_wr32(u32 a, u32 v)
 /* Runs the loop from pc (m4a_pc_out or m4a_pc_in) until it exits or the
    cycles run out, pc becomes the next instruction. False (nothing done) for
    a PCM buffer outside work RAM or unaligned: the interpreter keeps it. */
-static bool m4a_run(u32 &pc, s32 &cycles, u32 &n_flag, u32 &z_flag, u32 &c_flag, u32 &v_flag)
+XT_HOT static bool m4a_run(u32 &pc, s32 &cycles, u32 &n_flag, u32 &z_flag, u32 &c_flag, u32 &v_flag)
 {
   const u32 base = m4a_base, stereo = (m4a_kind == 1);
   const s32 seq = ws_cyc_seq[3][1], nseq_b = ws_cyc_nseq[3][1];

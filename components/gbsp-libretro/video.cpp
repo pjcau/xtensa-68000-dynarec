@@ -2422,6 +2422,10 @@ extern "C" void gbsp_render_start(void)
     gbsp_render_core1 = 1;
 }
 
+#ifdef GBAPROF
+#include "esp_cpu.h"
+extern "C" { u32 gbaprof_notify_cycles, gbaprof_notifies; }
+#endif
 /* core 0: wait until core 1 has drawn every queued line */
 extern "C" void gbsp_render_sync(void)
 {
@@ -2459,7 +2463,16 @@ static void line_ready(u32 vcount)
     gbaprof_lag80 += gbsp_rq - gbsp_rd;
 #endif
   if ((vcount & 7) == 7 || vcount == 159)
+  {
+#ifdef GBAPROF
+    u32 c0 = esp_cpu_get_cycle_count();
+#endif
     xTaskNotifyGive(rtask);
+#ifdef GBAPROF
+    gbaprof_notify_cycles += esp_cpu_get_cycle_count() - c0;
+    gbaprof_notifies++;
+#endif
+  }
 }
 #else
 extern "C" void gbsp_render_start(void) {}
@@ -2500,7 +2513,7 @@ static void line_ready(u32 vcount)
 #endif
 extern "C" void gbsp_render_wait(void) { gbsp_render_sync(); }
 
-void update_scanline(void)
+XT_HOT void update_scanline(void)
 {
   u16 dispcnt = live_ioreg(REG_DISPCNT);
   u32 vcount = live_ioreg(REG_VCOUNT);

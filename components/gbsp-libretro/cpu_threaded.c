@@ -2556,7 +2556,7 @@ inline static ramtag_type* get_ram_tag(u16 tagval) {
 
 
 #define block_lookup_translate_builder(type)                                  \
-u8 function_cc *block_lookup_translate_##type(u32 pc)                         \
+XT_HOT u8 function_cc *block_lookup_translate_##type(u32 pc)                         \
 {                                                                             \
   u8 pcregion = (pc >> 24);                                                   \
   u16 *location;                                                              \
@@ -2645,7 +2645,7 @@ u8 function_cc *block_lookup_translate_##type(u32 pc)                         \
 block_lookup_translate_builder(arm);
 block_lookup_translate_builder(thumb);
 
-u8 function_cc *block_lookup_address_dual(u32 pc)
+XT_HOT u8 function_cc *block_lookup_address_dual(u32 pc)
 {
   u32 thumb = pc & 0x01;
   if(thumb) {
@@ -2659,7 +2659,7 @@ u8 function_cc *block_lookup_address_dual(u32 pc)
   }
 }
 
-u8 function_cc *block_lookup_address_arm(u32 pc)
+XT_HOT u8 function_cc *block_lookup_address_arm(u32 pc)
 {
   unsigned i;
   for (i = 0; i < 4; i++) {
@@ -2675,7 +2675,7 @@ u8 function_cc *block_lookup_address_arm(u32 pc)
   return NULL;
 }
 
-u8 function_cc *block_lookup_address_thumb(u32 pc)
+XT_HOT u8 function_cc *block_lookup_address_thumb(u32 pc)
 {
   unsigned i;
   for (i = 0; i < 4; i++) {
@@ -3097,6 +3097,13 @@ bool translate_block_arm(u32 pc, bool ram_region)
   while(pc != block_end_pc)
   {
     block_data[block_data_position].block_offset = translation_ptr;
+#if defined(XTENSA_ARCH) && defined(RETRO_GO)
+    if (m4a_dynarec_head(pc))
+    {
+      generate_cycle_update();
+      xt_m4a_hook(pc);
+    }
+#endif
     arm_base_cycles();
 
     if (pc == cheat_master_hook)

@@ -53,7 +53,7 @@ void sound_timer_queue32(u32 channel, u32 value)
 }
 
 
-unsigned sound_timer(fixed8_24 frequency_step, u32 channel)
+XT_HOT unsigned sound_timer(fixed8_24 frequency_step, u32 channel)
 {
   int ret = 0;
   u32 sample_status = DIRECT_SOUND_INACTIVE;

@@ -77,9 +77,11 @@ enum
   XT_FN_PROCESS_CHEATS,
   XT_FN_HLE_DIV,
   XT_FN_HLE_DIV_ARM,
+  XT_FN_M4A,
   XT_FN_COUNT
 };
 
+int m4a_dynarec_head(u32 pc);
 extern u32 xt_exec_delta;
 void platform_cache_sync(void *baseaddr, void *endptr);
 extern u8 *xt_exit_stub;          /* data address of "retw" */
@@ -228,9 +230,13 @@ static __attribute__((noinline)) u8 *xt_add_imm(u8 *translation_ptr, int ireg, u
 /* after a helper that may redirect: a10 = 0 to go on, else where to jump
    (with the cycles it left in reg[XT_CYC_SLOT]) */
 #define xt_jump_if_redirect()                                                 \
-  XT(beqz, reg_rv, 5);   /* over the l32i (3 bytes) and the jx (3) */      \
-  XT(l32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);                            \
-  XT(jx, reg_rv)
+  {                                                                           \
+    u8 *xt_go_on;                                                             \
+    XT_FWD_B12(xt_go_on, beqz, reg_rv);                                       \
+    XT(l32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);                          \
+    XT(jx, reg_rv);                                                           \
+    xt_fwd_b12(xt_go_on, translation_ptr);                                    \
+  }
 
 /* ---- cycle counter --------------------------------------------------------- */
 #define generate_cycle_update()                                               \
@@ -339,6 +345,13 @@ static __attribute__((noinline)) u8 *xt_nz_flags(u8 *translation_ptr, int res, u
 static __attribute__((noinline)) u8 *xt_add_op(u8 *translation_ptr, int res, int a, int b, int cin, u32 flag_status)
 {
   /* res may alias a */
+  if (!check_generate_c_flag && !check_generate_v_flag)
+  {
+    XT(add, res, a, b);
+    if (cin >= 0)
+      XT(add, res, res, cin);
+    return xt_nz_flags(translation_ptr, res, flag_status);
+  }
   XT(add, XT_S1, a, b);
   if (check_generate_c_flag)
     XT(saltu, XT_S2, XT_S1, b);               /* carry of a + b */
@@ -370,6 +383,13 @@ static __attribute__((noinline)) u8 *xt_add_op(u8 *translation_ptr, int res, int
    ARM C = not borrow, V as x86 sub/sbb */
 static __attribute__((noinline)) u8 *xt_sub_op(u8 *translation_ptr, int res, int a, int b, int bin, u32 flag_status)
 {
+  if (!check_generate_c_flag && !check_generate_v_flag)
+  {
+    XT(sub, res, a, b);
+    if (bin >= 0)
+      XT(sub, res, res, bin);
+    return xt_nz_flags(translation_ptr, res, flag_status);
+  }
   XT(sub, XT_S1, a, b);
   if (check_generate_c_flag)
     XT(saltu, XT_S2, a, b);                   /* borrow of a - b */

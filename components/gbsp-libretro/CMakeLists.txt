@@ -21,6 +21,11 @@ rg_setup_compile_options(
 )
 if(DEFINED ENV{GBAJIT} AND NOT "$ENV{GBAJIT}" STREQUAL "0")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC HAVE_DYNAREC XTENSA_ARCH SMALL_TRANSLATION_CACHE)
+    # GBAJIT_IRAM=1 (experiment): small translation caches in internal RAM
+    # (no PSRAM instruction fetch; needs CONFIG_ESP_SYSTEM_MEMPROT_FEATURE off)
+    if(DEFINED ENV{GBAJIT_IRAM} AND NOT "$ENV{GBAJIT_IRAM}" STREQUAL "0")
+        target_compile_definitions(${COMPONENT_LIB} PUBLIC XT_IRAM_CACHE)
+    endif()
     # the translator expands the emitter in thousands of places: size, and
     # literals next to the code (Xtensa l32r reaches 256 KB back)
     set_source_files_properties(cpu_threaded.c PROPERTIES COMPILE_OPTIONS "-Os;-mtext-section-literals")

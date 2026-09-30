@@ -51,7 +51,7 @@ void rand_seed(u32 data) {
 }
 
 
-static unsigned update_timers(irq_type *irq_raised, unsigned completed_cycles)
+XT_HOT static unsigned update_timers(irq_type *irq_raised, unsigned completed_cycles)
 {
    unsigned i, ret = 0;
    for (i = 0; i < 4; i++)
@@ -120,7 +120,7 @@ void init_main(void)
 #endif
 }
 
-u32 function_cc update_gba(int remaining_cycles)
+XT_HOT u32 function_cc update_gba(int remaining_cycles)
 {
   u32 changed_pc = 0;
   u32 frame_complete = 0;

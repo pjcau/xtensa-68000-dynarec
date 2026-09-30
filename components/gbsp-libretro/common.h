@@ -34,6 +34,15 @@
   #define PATH_SEPARATOR_CHAR '/'
 #endif
 
+/* hot code called by the Xtensa dynarec's translated code: in IRAM, so that
+   the 32 KB instruction cache is left to the translated code (PSRAM) */
+#if defined(XTENSA_ARCH) && defined(ESP_PLATFORM)
+#include "esp_attr.h"
+#define XT_HOT IRAM_ATTR
+#else
+#define XT_HOT
+#endif
+
 /* On x86 we pass arguments via registers instead of stack */
 #ifdef X86_ARCH
   #define function_cc __attribute__((regparm(2)))
