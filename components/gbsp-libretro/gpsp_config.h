@@ -13,8 +13,8 @@
 
 /* Cache sizes and their config knobs */
 #if defined(XT_IRAM_CACHE)   /* xtensa experiment: both caches in internal RAM */
-  #define ROM_TRANSLATION_CACHE_SIZE (1024 * 96)
-  #define RAM_TRANSLATION_CACHE_SIZE (1024 * 32)
+  #define ROM_TRANSLATION_CACHE_SIZE (1024 * 32)
+  #define RAM_TRANSLATION_CACHE_SIZE (1024 * 16)
 #elif defined(SMALL_TRANSLATION_CACHE)
   #define ROM_TRANSLATION_CACHE_SIZE (1024 * 1024 * 2)
   #define RAM_TRANSLATION_CACHE_SIZE (1024 * 384)

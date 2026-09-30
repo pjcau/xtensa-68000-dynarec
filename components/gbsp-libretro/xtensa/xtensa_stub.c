@@ -44,11 +44,17 @@ u16 palette_ram_converted[512];
 XT_EXT_BSS u8 ewram[(1024 * 256) << SMC_DETECTION];
 XT_EXT_BSS u8 vram[1024 * 96];
 #endif
+#ifdef XT_IRAM_CACHE   /* internal RAM goes to the translation caches instead */
+XT_EXT_BSS u8 iwram[(1024 * 32) << SMC_DETECTION];
+#else
 u8 iwram[(1024 * 32) << SMC_DETECTION];   /* internal RAM: the game's stack and hot code */
+#endif
 u8 *memory_map_read[8 * 1024];
 u16 io_registers[512];
 
 xj_emit_t xt_es;
+xt_cold_t xt_cold[XT_COLD_MAX];   /* the block being translated (xt_emit_cold) */
+int xt_cold_n;
 
 /* the out-of-line emitters behind XT() (xtensa_emit.h) */
 u8 *xto_retw(u8 *p)

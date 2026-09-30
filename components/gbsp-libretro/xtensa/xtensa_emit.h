@@ -266,9 +266,15 @@ static __attribute__((noinline)) u8 *xt_load_imm32_force(u8 *translation_ptr, in
   return translation_ptr;
 }
 
+/* dest: the exit's first j. Its target is "l32r a8; jx a8" with the literal
+   word just before it, inline (xt_emit_exit_filler) or in the block's cold
+   area (xt_emit_cold): write the literal, and turn the j into a direct jump
+   when the target is within reach. */
 static inline void xt_patch_exit(u8 *dest, u8 *target)
 {
-  u32 lit = ((uintptr_t)(dest + 3) + 3) & ~3u;
+  u32 w = dest[0] | (dest[1] << 8) | (dest[2] << 16);
+  s32 off = ((s32)(w << 8)) >> 14;                               /* j: offset bits 23..6 */
+  u32 lit = (u32)(uintptr_t)(dest + 4 + off) - 4;
   s32 d = (s32)((uintptr_t)target - (uintptr_t)(dest + 4));   /* same in both aliases */
   *(u32 *)(uintptr_t)lit = (u32)(uintptr_t)target + xt_exec_delta;
   if (d >= -131072 && d <= 131071)
@@ -418,6 +424,46 @@ static __attribute__((noinline)) u8 *xt_sub_op(u8 *translation_ptr, int res, int
   }
   XT(mov, res, XT_S1);
   translation_ptr = xt_nz_flags(translation_ptr, res, flag_status);
+  return translation_ptr;
+}
+
+/* ---- cold code at the end of the block --------------------------------------- */
+#define XT_COLD_MAX 40   /* x ~32 bytes: stays inside TRANSLATION_CACHE_LIMIT_THRESHOLD */
+enum { XT_COLD_UPDATE, XT_COLD_EXIT };
+typedef struct { u8 *hot; u32 target_pc; u32 kind; } xt_cold_t;
+extern xt_cold_t xt_cold[XT_COLD_MAX];
+extern int xt_cold_n;
+
+static __attribute__((noinline)) u8 *xt_emit_cold(u8 *translation_ptr, u32 stored_pc)
+{
+  for (int i = 0; i < xt_cold_n; i++)
+  {
+    xt_cold_t *c = &xt_cold[i];
+    if (c->kind == XT_COLD_UPDATE)
+    {
+      /* the hot "j" lands here; x86_update_gba, then back after it */
+      xt_patch_j(c->hot, translation_ptr);
+      translation_ptr = xt_load_pc(translation_ptr, reg_a0, c->target_pc, stored_pc);
+      XT(s32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);
+      xt_call(XT_FN_UPDATE_GBA);
+      XT(l32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);
+      XT(bnez, reg_rv, 2);                              /* over the j */
+      XT(j, (int)((c->hot + 3) - (translation_ptr + 4)));
+      XT(jx, reg_rv);
+    }
+    else
+    {
+      /* .word target; l32r a8; jx a8 (xt_patch_exit fills the word) */
+      while ((uintptr_t)translation_ptr & 3)
+        *translation_ptr++ = 0;
+      *(u32 *)translation_ptr = 0;
+      translation_ptr += 4;
+      xt_patch_j(c->hot, translation_ptr);
+      XT(l32r, XT_CALLREG, -4);
+      XT(jx, XT_CALLREG);
+    }
+  }
+  xt_cold_n = 0;
   return translation_ptr;
 }
 

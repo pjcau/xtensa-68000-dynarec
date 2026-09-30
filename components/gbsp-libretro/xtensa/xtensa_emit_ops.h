@@ -18,12 +18,29 @@
   XT(beqz, reg_rv, 2);                                                        \
   XT(jx, reg_rv)
 
+/* Cold code goes to the end of the block (xt_emit_cold, called by
+   translate_block after the body): in the hot path a branch is only
+   "bgez a3, +2; j cold_update; j exit", and the exit j is later patched
+   into a direct jump to the next block. The update_gba call and the exit's
+   literal/l32r/jx stay out of the instruction cache lines the loop uses. */
 #define generate_branch_no_cycle_update(writeback_location, new_pc)           \
   if(pc == idle_loop_target_pc)                                               \
   {                                                                           \
     XT(movi, reg_cycles, 0);                                                  \
     xt_update_call(new_pc);                                                   \
     xt_emit_exit_filler(writeback_location);                                  \
+  }                                                                           \
+  else if (xt_cold_n + 2 <= XT_COLD_MAX)                                      \
+  {                                                                           \
+    XT(bgez, reg_cycles, 2);                  /* over the j */                \
+    xt_cold[xt_cold_n].hot = translation_ptr;                                 \
+    xt_cold[xt_cold_n].target_pc = (new_pc);                                     \
+    xt_cold[xt_cold_n++].kind = XT_COLD_UPDATE;                               \
+    XT(j, 0);                                                                 \
+    (writeback_location) = translation_ptr;                                   \
+    xt_cold[xt_cold_n].hot = translation_ptr;                                 \
+    xt_cold[xt_cold_n++].kind = XT_COLD_EXIT;                                 \
+    XT(j, 0);                                                                 \
   }                                                                           \
   else                                                                        \
   {                                                                           \
@@ -59,8 +76,11 @@
 #define generate_block_prologue()                                             \
   stored_pc = pc;                                                             \
   generate_load_imm(pcbase, pc)
-#define generate_block_extra_vars_arm()   u32 stored_pc = 0
-#define generate_block_extra_vars_thumb() u32 stored_pc = 0
+#define generate_block_extra_vars_arm()   u32 stored_pc = 0; int xt_cold_reset = (xt_cold_n = 0)
+#define generate_block_extra_vars_thumb() u32 stored_pc = 0; int xt_cold_reset = (xt_cold_n = 0)
+#define generate_block_cold()                                                 \
+  (void)xt_cold_reset;                                                        \
+  translation_ptr = xt_emit_cold(translation_ptr, stored_pc)
 
 #define generate_indirect_branch_arm()                                        \
   {                                                                           \

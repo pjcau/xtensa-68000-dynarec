@@ -43,6 +43,7 @@ gbsp_memory_t *gbsp_memory;
 void netpacket_poll_receive() {}
 void netpacket_send(uint16_t client_id, const void *buf, size_t len) {}
 void set_fastforward_override(bool fastforward) {}
+void gbsp_display_poll(void) {}
 void gbsp_render_start(void);
 
 /* ---- /rom: the "rom" and "state" partitions as two read-only files ---------- */

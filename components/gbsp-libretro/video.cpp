@@ -335,7 +335,7 @@ static inline void render_tile_Nbpp(
 
 
 template<typename stype, rendtype rdtype, bool isbase, bool is8bpp>
-static void render_scanline_text_fast(u32 layer,
+static inline __attribute__((always_inline)) void render_scanline_text_fast(u32 layer,
  u32 start, u32 end, void *scanline, const u16 * paltbl)
 {
   u32 bg_control = read_ioreg(REG_BGxCNT(layer));
@@ -600,7 +600,7 @@ static void render_scanline_text_mosaic(u32 layer,
 }
 
 template<typename stype, rendtype rdtype, bool isbase>
-static void render_scanline_text(u32 layer,
+static inline __attribute__((always_inline)) void render_scanline_text_body(u32 layer,
  u32 start, u32 end, void *scanline, const u16 * paltbl)
 {
   // Tile mode has 4 and 8 bpp modes.
@@ -624,6 +624,29 @@ static void render_scanline_text(u32 layer,
       render_scanline_text_fast<stype, rdtype, isbase, false>(
         layer, start, end, scanline, paltbl);
   }
+}
+
+template<typename stype, rendtype rdtype, bool isbase>
+static void render_scanline_text(u32 layer,
+ u32 start, u32 end, void *scanline, const u16 * paltbl)
+{
+  render_scanline_text_body<stype, rdtype, isbase>(layer, start, end, scanline, paltbl);
+}
+
+/* the tile layers of the common case (16-bit, no blending) run on core 1
+   next to the Xtensa dynarec on core 0: in IRAM, out of the shared 32 KB
+   instruction cache */
+template<>
+XT_HOT void render_scanline_text<u16, FULLCOLOR, true>(u32 layer,
+ u32 start, u32 end, void *scanline, const u16 * paltbl)
+{
+  render_scanline_text_body<u16, FULLCOLOR, true>(layer, start, end, scanline, paltbl);
+}
+template<>
+XT_HOT void render_scanline_text<u16, FULLCOLOR, false>(u32 layer,
+ u32 start, u32 end, void *scanline, const u16 * paltbl)
+{
+  render_scanline_text_body<u16, FULLCOLOR, false>(layer, start, end, scanline, paltbl);
 }
 
 static inline u8 lookup_pix_8bpp(
@@ -2513,10 +2536,17 @@ static void line_ready(u32 vcount)
 #endif
 extern "C" void gbsp_render_wait(void) { gbsp_render_sync(); }
 
+#ifdef RETRO_GO
+extern "C" void gbsp_display_poll(void);
+#endif
 XT_HOT void update_scanline(void)
 {
   u16 dispcnt = live_ioreg(REG_DISPCNT);
   u32 vcount = live_ioreg(REG_VCOUNT);
+#ifdef RETRO_GO
+  if ((vcount & 31) == 31)
+    gbsp_display_poll();   /* a frame finished while the display was busy */
+#endif
   u32 video_mode = dispcnt & 0x07;
 
   if(skip_next_frame)
