@@ -2449,6 +2449,11 @@ extern "C" void gbsp_render_start(void)
 #include "esp_cpu.h"
 extern "C" { u32 gbaprof_notify_cycles, gbaprof_notifies; }
 #endif
+/* core 1 is woken every (GBSP_WAKE_MASK + 1) lines: the less it lags, the less
+   core 0 waits in gbsp_render_sync when the game writes VRAM mid-frame */
+#ifndef GBSP_WAKE_MASK
+#define GBSP_WAKE_MASK 7
+#endif
 /* core 0: wait until core 1 has drawn every queued line */
 extern "C" void gbsp_render_sync(void)
 {
@@ -2485,7 +2490,7 @@ static void line_ready(u32 vcount)
   if (vcount == 80)
     gbaprof_lag80 += gbsp_rq - gbsp_rd;
 #endif
-  if ((vcount & 7) == 7 || vcount == 159)
+  if ((vcount & GBSP_WAKE_MASK) == GBSP_WAKE_MASK || vcount == 159)
   {
 #ifdef GBAPROF
     u32 c0 = esp_cpu_get_cycle_count();

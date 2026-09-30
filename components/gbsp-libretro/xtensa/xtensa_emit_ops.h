@@ -940,27 +940,122 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 #define thumb_rn_op_imm(_imm)                                                 \
   generate_load_imm(a0, _imm)                                                 \
 
+/* The common Thumb ALU ops go through xt_thumb_alu, which works on the host
+   registers of r0..r2 directly (no mov in and out); the rest keep the x86
+   shape (operands in a0/a1). Operand order and flag code are the same as
+   arm_data_proc_*: a0 = rn (or the immediate), a1 = rs. */
+enum { XOP_NONE = -1, XOP_ADD, XOP_SUB, XOP_AND, XOP_EOR, XOP_ORR, XOP_CMP, XOP_CMN, XOP_TST, XOP_MOV };
+#define XOP_adds XOP_ADD
+#define XOP_subs XOP_SUB
+#define XOP_ands XOP_AND
+#define XOP_eors XOP_EOR
+#define XOP_orrs XOP_ORR
+#define XOP_cmp  XOP_CMP
+#define XOP_cmn  XOP_CMN
+#define XOP_tst  XOP_TST
+#define XOP_movs XOP_MOV
+#define XOP_adcs XOP_NONE
+#define XOP_sbcs XOP_NONE
+#define XOP_muls XOP_NONE
+#define XOP_bics XOP_NONE
+#define XOP_mvns XOP_NONE
+#define XOP_neg  XOP_NONE
+#define XOP_teq  XOP_NONE
+#define XT_RN_reg 0
+#define XT_RN_imm 1
+
+static __attribute__((noinline)) u8 *xt_thumb_alu(u8 *translation_ptr, int op, int rd, u32 rs,
+                                                  int rn_imm, u32 rn, u32 flag_status)
+{
+  int a, b = -1, res, m;
+  /* a = rn: its host register, loaded into a0, or the immediate in a0 */
+  if (rn_imm)
+  {
+    if (op == XOP_MOV)
+    {
+      m = xt_host_of(rd);
+      res = m >= 0 ? m : reg_a0;
+      translation_ptr = xt_load_imm32(translation_ptr, res, rn);
+      translation_ptr = xt_nz_flags(translation_ptr, res, flag_status);
+      if (m < 0)
+        XT(s32i, res, reg_base, rd * 4);
+      return translation_ptr;
+    }
+    translation_ptr = xt_load_imm32(translation_ptr, reg_a0, rn);
+    a = reg_a0;
+  }
+  else if ((m = xt_host_of(rn)) >= 0)
+    a = m;
+  else
+  {
+    XT(l32i, reg_a0, reg_base, rn * 4);
+    a = reg_a0;
+  }
+  if ((m = xt_host_of(rs)) >= 0)
+    b = m;
+  else
+  {
+    XT(l32i, reg_a1, reg_base, rs * 4);
+    b = reg_a1;
+  }
+  /* the result: straight into rd's host register, else a0 then reg[rd] */
+  m = rd >= 0 ? xt_host_of(rd) : -1;
+  res = m >= 0 ? m : reg_a0;
+  switch (op)
+  {
+  case XOP_ADD: translation_ptr = xt_add_op(translation_ptr, res, a, b, -1, flag_status); break;
+  case XOP_SUB: translation_ptr = xt_sub_op(translation_ptr, res, b, a, -1, flag_status); break;
+  case XOP_AND: XT(and, res, a, b); translation_ptr = xt_nz_flags(translation_ptr, res, flag_status); break;
+  case XOP_EOR: XT(xor, res, a, b); translation_ptr = xt_nz_flags(translation_ptr, res, flag_status); break;
+  case XOP_ORR: XT(or, res, a, b); translation_ptr = xt_nz_flags(translation_ptr, res, flag_status); break;
+  case XOP_CMP: return xt_sub_op(translation_ptr, XT_S3, b, a, -1, flag_status);
+  case XOP_CMN: return xt_add_op(translation_ptr, XT_S3, b, a, -1, flag_status);
+  case XOP_TST: XT(and, XT_S3, a, b); return xt_nz_flags(translation_ptr, XT_S3, flag_status);
+  }
+  if (m < 0)
+    XT(s32i, res, reg_base, rd * 4);
+  return translation_ptr;
+}
+
 #define thumb_data_proc(type, name, rn_type, _rd, _rs, _rn)                   \
 {                                                                             \
   thumb_decode_##type();                                                      \
-  thumb_rn_op_##rn_type(_rn);                                                 \
-  generate_load_reg(a1, _rs);                                                 \
-  arm_data_proc_##name(_rd, generate_store_reg);                              \
+  if (XOP_##name != XOP_NONE)                                                 \
+    translation_ptr = xt_thumb_alu(translation_ptr, XOP_##name, (_rd), (_rs), \
+                                   XT_RN_##rn_type, (_rn), flag_status);      \
+  else                                                                        \
+  {                                                                           \
+    thumb_rn_op_##rn_type(_rn);                                               \
+    generate_load_reg(a1, _rs);                                               \
+    arm_data_proc_##name(_rd, generate_store_reg);                            \
+  }                                                                           \
 }                                                                             \
 
 #define thumb_data_proc_test(type, name, rn_type, _rs, _rn)                   \
 {                                                                             \
   thumb_decode_##type();                                                      \
-  thumb_rn_op_##rn_type(_rn);                                                 \
-  generate_load_reg(a1, _rs);                                                 \
-  arm_data_proc_test_##name();                                                \
+  if (XOP_##name != XOP_NONE)                                                 \
+    translation_ptr = xt_thumb_alu(translation_ptr, XOP_##name, -1, (_rs),    \
+                                   XT_RN_##rn_type, (_rn), flag_status);      \
+  else                                                                        \
+  {                                                                           \
+    thumb_rn_op_##rn_type(_rn);                                               \
+    generate_load_reg(a1, _rs);                                               \
+    arm_data_proc_test_##name();                                              \
+  }                                                                           \
 }                                                                             \
 
 #define thumb_data_proc_unary(type, name, rn_type, _rd, _rn)                  \
 {                                                                             \
   thumb_decode_##type();                                                      \
-  thumb_rn_op_##rn_type(_rn);                                                 \
-  arm_data_proc_unary_##name(_rd, generate_store_reg);                        \
+  if (XOP_##name == XOP_MOV && XT_RN_##rn_type == XT_RN_imm)                  \
+    translation_ptr = xt_thumb_alu(translation_ptr, XOP_MOV, (_rd), 0,        \
+                                   XT_RN_imm, (_rn), flag_status);            \
+  else                                                                        \
+  {                                                                           \
+    thumb_rn_op_##rn_type(_rn);                                               \
+    arm_data_proc_unary_##name(_rd, generate_store_reg);                      \
+  }                                                                           \
 }                                                                             \
 
 #define thumb_data_proc_mov(type, rn_type, _rd, _rn)                          \
@@ -1318,10 +1413,14 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 }                                                                             \
 
 #define thumb_process_cheats()                                                \
-  xt_call(XT_FN_PROCESS_CHEATS);
+  translation_ptr = xt_sync_to_mem(translation_ptr);                          \
+  xt_call(XT_FN_PROCESS_CHEATS);                                              \
+  translation_ptr = xt_sync_from_mem(translation_ptr);
 
 #define arm_process_cheats()                                                  \
-  xt_call(XT_FN_PROCESS_CHEATS);
+  translation_ptr = xt_sync_to_mem(translation_ptr);                          \
+  xt_call(XT_FN_PROCESS_CHEATS);                                              \
+  translation_ptr = xt_sync_from_mem(translation_ptr);
 
 #define thumb_swi()                                                           \
   generate_load_pc(a0, (pc + 2));                                             \
@@ -1331,14 +1430,22 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
    block_exits[block_exit_position].branch_target);                           \
   block_exit_position++                                                       \
 
-#define arm_hle_div(cpu_mode)     xt_call(XT_FN_HLE_DIV)
-#define arm_hle_div_arm(cpu_mode) xt_call(XT_FN_HLE_DIV_ARM)
+#define arm_hle_div(cpu_mode)                                                 \
+  translation_ptr = xt_sync_to_mem(translation_ptr);                          \
+  xt_call(XT_FN_HLE_DIV);                                                     \
+  translation_ptr = xt_sync_from_mem(translation_ptr)
+#define arm_hle_div_arm(cpu_mode)                                             \
+  translation_ptr = xt_sync_to_mem(translation_ptr);                          \
+  xt_call(XT_FN_HLE_DIV_ARM);                                                 \
+  translation_ptr = xt_sync_from_mem(translation_ptr)
 
 /* the m4a mixer loop head (cpu.cpp): run it natively, or go on here */
 #define xt_m4a_hook(hook_pc)                                                  \
+  translation_ptr = xt_sync_to_mem(translation_ptr);                          \
   generate_load_pc(a0, (hook_pc));                                            \
   XT(s32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);                            \
   xt_call(XT_FN_M4A);                                                         \
+  translation_ptr = xt_sync_from_mem(translation_ptr);                        \
   xt_jump_if_redirect()
 
 #define generate_translation_gate(type)                                       \

@@ -876,9 +876,11 @@ void init_emitter(bool must_swap)
   XT(mov, 9, 3);            /* target */
   XT(mov, reg_cycles, 2);   /* a3 = cycles */
   XT(mov, reg_base, 4);     /* a2 = &reg[0] */
+  translation_ptr = xt_sync_from_mem(translation_ptr);   /* r0..r2 -> a4/a6/a7 */
   XT(jx, 9);
   /* leaving translated code: back to xt_enter's caller */
   xt_exit_stub = translation_ptr;
+  translation_ptr = xt_sync_to_mem(translation_ptr);
   XT(retw);
   translation_ptr = (u8 *)(((uintptr_t)translation_ptr + 15) & ~(uintptr_t)15);
   platform_cache_sync(rom_translation_cache, translation_ptr);

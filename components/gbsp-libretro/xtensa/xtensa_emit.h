@@ -35,8 +35,16 @@
 /* ---- host registers ---------------------------------------------------- */
 #define reg_base    2
 #define reg_cycles  3
-#define reg_t0      4
+#define reg_t0      8    /* x86 esi: only held between two helper calls here */
 #define reg_pcbase  5
+/* guest registers kept in host registers in all translated code: a4, a6, a7
+   survive callx8 (the helper calls), so r0..r2 never go to reg[] except
+   where C code reads or writes them (xt_sync_*: HLE divide, m4a, cheats,
+   entering and leaving translated code) */
+#define XT_MAP_R0   4
+#define XT_MAP_R1   6
+#define XT_MAP_R2   7
+#define XT_MAPPED   3
 #define reg_a0      10
 #define reg_a1      11
 #define reg_a2      12
@@ -177,13 +185,58 @@ static __attribute__((noinline)) u8 *xt_load_pc(u8 *translation_ptr, int ireg, u
 #define generate_load_pc(ireg, new_pc)                                        \
   translation_ptr = xt_load_pc(translation_ptr, reg_##ireg, (new_pc), stored_pc)
 
+static inline int xt_host_of(u32 r)
+{
+  return r == 0 ? XT_MAP_R0 : r == 1 ? XT_MAP_R1 : r == 2 ? XT_MAP_R2 : -1;
+}
+static __attribute__((noinline)) u8 *xt_load_reg(u8 *translation_ptr, int h, u32 r)
+{
+  int m = xt_host_of(r);
+  if (m >= 0)
+    XT(mov, h, m);
+  else
+    XT(l32i, h, reg_base, r * 4);
+  return translation_ptr;
+}
+static __attribute__((noinline)) u8 *xt_store_reg(u8 *translation_ptr, int h, u32 r)
+{
+  int m = xt_host_of(r);
+  if (m >= 0)
+    XT(mov, m, h);
+  else
+    XT(s32i, h, reg_base, r * 4);
+  return translation_ptr;
+}
+static __attribute__((noinline)) u8 *xt_store_reg_i32(u8 *translation_ptr, u32 imm, u32 r)
+{
+  int m = xt_host_of(r);
+  if (m >= 0)
+    return xt_load_imm32(translation_ptr, m, imm);
+  translation_ptr = xt_load_imm32(translation_ptr, XT_S0, imm);
+  XT(s32i, XT_S0, reg_base, r * 4);
+  return translation_ptr;
+}
+/* reg[0..2] <-> a4/a6/a7 around C code that reads or writes them */
+static __attribute__((noinline)) u8 *xt_sync_to_mem(u8 *translation_ptr)
+{
+  XT(s32i, XT_MAP_R0, reg_base, 0);
+  XT(s32i, XT_MAP_R1, reg_base, 4);
+  XT(s32i, XT_MAP_R2, reg_base, 8);
+  return translation_ptr;
+}
+static __attribute__((noinline)) u8 *xt_sync_from_mem(u8 *translation_ptr)
+{
+  XT(l32i, XT_MAP_R0, reg_base, 0);
+  XT(l32i, XT_MAP_R1, reg_base, 4);
+  XT(l32i, XT_MAP_R2, reg_base, 8);
+  return translation_ptr;
+}
 #define generate_load_reg(ireg, reg_index)                                    \
-  XT(l32i, reg_##ireg, reg_base, (reg_index) * 4)
+  translation_ptr = xt_load_reg(translation_ptr, reg_##ireg, (reg_index))
 #define generate_store_reg(ireg, reg_index)                                   \
-  XT(s32i, reg_##ireg, reg_base, (reg_index) * 4)
+  translation_ptr = xt_store_reg(translation_ptr, reg_##ireg, (reg_index))
 #define generate_store_reg_i32(imm32, reg_index)                              \
-  generate_load_imm(s0, (imm32));                                             \
-  XT(s32i, XT_S0, reg_base, (reg_index) * 4)
+  translation_ptr = xt_store_reg_i32(translation_ptr, (imm32), (reg_index))
 #define reg_s0 XT_S0
 #define reg_s1 XT_S1
 #define reg_s2 XT_S2
