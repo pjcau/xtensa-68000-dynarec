@@ -6,3 +6,5 @@ sdkconfig.old
 *.state
 *.sram
 qemu_*.bin
+test/m68k-test/host/len_check
+test/m68k-test/host/fuzz_host

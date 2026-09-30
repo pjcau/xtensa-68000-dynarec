@@ -1,0 +1,4 @@
+Musashi 4.5 (MIT), https://github.com/kstenerud/Musashi at 313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd.
+m68kops.c/h are generated: gcc -O2 -o m68kmake m68kmake.c && ./m68kmake . m68k_in.c
+m68kconf.h: unchanged defaults (no prefetch, no address error emulation).
+softfloat/: John R. Hauser, see softfloat/README.txt.
