@@ -32,6 +32,8 @@ bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint3
         .cycles = (int32_t *)&m68ki_remaining_cycles,
         .handlers = (const m68kjit_handler_t *)m68ki_instruction_jump_table,
         .cyc = CYC_INSTRUCTION,
+        .cyc_bcc_notake_b = (int)CYC_BCC_NOTAKE_B, .cyc_bcc_notake_w = (int)CYC_BCC_NOTAKE_W,
+        .cyc_dbcc_f_noexp = (int)CYC_DBCC_F_NOEXP, .cyc_dbcc_f_exp = (int)CYC_DBCC_F_EXP,
         .step = step,
         .is_code = is_code,
         .read_code16 = read_code16,

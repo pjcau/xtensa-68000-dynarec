@@ -30,6 +30,8 @@ typedef struct
     int32_t *cycles;                        /* cycles left in the time slice */
     const m68kjit_handler_t *handlers;      /* opcode -> handler (65536) */
     const uint8_t *cyc;                     /* opcode -> base cycles (65536) */
+    /* cycle adjustments of the CPU type (Musashi's USE_CYCLES(CYC_...), may be < 0) */
+    int cyc_bcc_notake_b, cyc_bcc_notake_w, cyc_dbcc_f_noexp, cyc_dbcc_f_exp;
     /* one interpreter step (fetch, handler, cycles) for code not translated */
     void (*step)(void);
     /* code the translator may read: true if [addr, addr + len) is fixed code (ROM) */

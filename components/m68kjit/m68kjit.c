@@ -174,7 +174,7 @@ static int decode(uint32_t pc, insn_t *out, int max)
  * neither PPC nor IR, and PC only when the block leaves after it.
  */
 enum { SZ_B = 1, SZ_W = 2, SZ_L = 4 };
-enum { N_NONE, N_MOVEQ, N_MOVE, N_MOVEA, N_ALU, N_ALUA, N_ADDQA, N_TST, N_CLR, N_SWAP, N_EXTW, N_EXTL, N_LEA };
+enum { N_NONE, N_MOVEQ, N_MOVE, N_MOVEA, N_ALU, N_ALUA, N_ADDQA, N_TST, N_CLR, N_SWAP, N_EXTW, N_EXTL, N_LEA, N_BCC, N_DBCC };
 enum { A_ADD, A_SUB, A_CMP, A_AND, A_OR, A_EOR };
 
 typedef struct
@@ -183,6 +183,8 @@ typedef struct
     int dst;                /* register number 0..15 (A registers are 8..15) */
     int smode, sreg;        /* source: mode 0 (Dn), 1 (An) or 7 (#imm in simm) */
     uint32_t simm;
+    int cc;                 /* Bcc/DBcc condition */
+    uint32_t target;        /* Bcc/DBcc: where a taken branch goes */
 } nat_t;
 
 static inline int o_r(int r) { return o_dar + 4 * r; }
@@ -235,8 +237,22 @@ static bool classify(const insn_t *i, nat_t *n)
         n->size = size; n->dst = dmode == 1 ? 8 + rx : rx;
         return reg_src(i, size, true, n);
     }
+    case 0x6:                                                   /* Bcc (not BRA/BSR, not the .l form) */
+    {
+        int cc = (op >> 8) & 0xF, d8 = op & 0xFF;
+        if (cc <= 1 || d8 == 0xFF) return false;
+        n->kind = N_BCC; n->cc = cc;
+        n->target = i->pc + 2 + (d8 ? (int8_t)d8 : (int16_t)H.read_code16(i->pc + 2));
+        return true;
+    }
     case 0x5:                                                   /* ADDQ / SUBQ */
     {
+        if (ss == 3 && mode == 1)                               /* DBcc */
+        {
+            n->kind = N_DBCC; n->cc = (op >> 8) & 0xF; n->dst = ry;
+            n->target = i->pc + 2 + (int16_t)H.read_code16(i->pc + 2);
+            return true;
+        }
         if (ss == 3) return false;
         int q = rx ? rx : 8;
         bool sub = op & 0x100;
@@ -467,6 +483,70 @@ static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
     }
 }
 
+/* branch to label when condition cc (2..15) holds, from Musashi's flags */
+static void emit_cond(xj_block_t *b, int cc, int label)
+{
+    xj_emit_t *e = &b->e;
+    int skip;
+    switch (cc)
+    {
+    case 0x4: case 0x5:                                     /* CC CS: C bit 8 */
+        xj_l32i(e, 8, 2, o_c);
+        xjb_bbi(b, cc == 5 ? xj_bbsi : xj_bbci, 8, 8, label);
+        break;
+    case 0x6: case 0x7:                                     /* NE EQ: Z */
+        xj_l32i(e, 8, 2, o_z);
+        xjb_bz(b, cc == 6 ? xj_bnez : xj_beqz, 8, label);
+        break;
+    case 0x8: case 0x9:                                     /* VC VS: V bit 7 */
+        xj_l32i(e, 8, 2, o_v);
+        xjb_bbi(b, cc == 9 ? xj_bbsi : xj_bbci, 8, 7, label);
+        break;
+    case 0xA: case 0xB:                                     /* PL MI: N bit 7 */
+        xj_l32i(e, 8, 2, o_n);
+        xjb_bbi(b, cc == 0xB ? xj_bbsi : xj_bbci, 8, 7, label);
+        break;
+    case 0xC: case 0xD:                                     /* GE LT: (N ^ V) bit 7 */
+        xj_l32i(e, 8, 2, o_n);
+        xj_l32i(e, 9, 2, o_v);
+        xj_xor(e, 8, 8, 9);
+        xjb_bbi(b, cc == 0xD ? xj_bbsi : xj_bbci, 8, 7, label);
+        break;
+    case 0x2:                                               /* HI: C clear and Z not set */
+        skip = xjb_label(b);
+        xj_l32i(e, 8, 2, o_c);
+        xjb_bbi(b, xj_bbsi, 8, 8, skip);
+        xj_l32i(e, 8, 2, o_z);
+        xjb_bz(b, xj_bnez, 8, label);
+        xjb_bind(b, skip);
+        break;
+    case 0x3:                                               /* LS: C set or Z set */
+        xj_l32i(e, 8, 2, o_c);
+        xjb_bbi(b, xj_bbsi, 8, 8, label);
+        xj_l32i(e, 8, 2, o_z);
+        xjb_bz(b, xj_beqz, 8, label);
+        break;
+    case 0xE:                                               /* GT: GE and NE */
+        skip = xjb_label(b);
+        xj_l32i(e, 8, 2, o_n);
+        xj_l32i(e, 9, 2, o_v);
+        xj_xor(e, 8, 8, 9);
+        xjb_bbi(b, xj_bbsi, 8, 7, skip);
+        xj_l32i(e, 8, 2, o_z);
+        xjb_bz(b, xj_bnez, 8, label);
+        xjb_bind(b, skip);
+        break;
+    case 0xF:                                               /* LE: LT or EQ */
+        xj_l32i(e, 8, 2, o_n);
+        xj_l32i(e, 9, 2, o_v);
+        xj_xor(e, 8, 8, 9);
+        xjb_bbi(b, xj_bbsi, 8, 7, label);
+        xj_l32i(e, 8, 2, o_z);
+        xjb_bz(b, xj_beqz, 8, label);
+        break;
+    }
+}
+
 /* cycles -= c (a6 = the new count) */
 static void emit_cycles(xj_emit_t *e, int c)
 {
@@ -512,6 +592,75 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         int len = i->next - i->pc;
         bool last = k == n - 1;
         nat_t nat;
+        if (classify(i, &nat) && (nat.kind == N_BCC || nat.kind == N_DBCC))
+        {
+            /* taken: cycles, PC = target, leave. Not taken: cycles, go on (or
+             * leave at the end of the slice / of the block with PC = next) */
+            m68kjit_stats.native++;
+            int taken = xjb_label(b), fall = xjb_label(b);
+            int cyc_fall = i->cyc;
+            if (nat.kind == N_BCC)
+            {
+                emit_cond(b, nat.cc, taken);
+                cyc_fall += len == 2 ? H.cyc_bcc_notake_b : H.cyc_bcc_notake_w;
+            }
+            else if (nat.cc != 0)                           /* DBcc: the condition holds -> fall through */
+            {
+                int dec = xjb_label(b);
+                if (nat.cc == 1) xjb_j(b, dec);             /* DBF: never holds */
+                else { emit_cond(b, nat.cc, fall); xjb_j(b, dec); }
+                xjb_bind(b, dec);
+                /* Dn.w -= 1; taken unless it became 0xFFFF */
+                xj_l32i(e, 8, 2, o_r(nat.dst));
+                xj_addi(e, 8, 8, -1);
+                xj_s16i(e, 8, 2, o_r(nat.dst));
+                xj_extui(e, 8, 8, 0, 16);
+                xjb_imm(b, 9, 0xFFFF);
+                int expired = xjb_label(b);
+                xjb_b8(b, xj_beq, 8, 9, expired);
+                emit_cycles(e, i->cyc + H.cyc_dbcc_f_noexp);
+                xjb_imm(b, 7, nat.target);
+                xj_s32i(e, 7, 2, o_pc);
+                xj_retw_n(e);
+                xjb_bind(b, expired);
+                emit_cycles(e, i->cyc + H.cyc_dbcc_f_exp);
+                int go = xjb_label(b);
+                xjb_j(b, go);
+                xjb_bind(b, fall);
+                emit_cycles(e, i->cyc);
+                xjb_bind(b, go);
+                cyc_fall = -1;                              /* cycles already done on both paths */
+            }
+            if (nat.kind == N_BCC)
+            {
+                /* not taken */
+                emit_cycles(e, cyc_fall);
+                int go = xjb_label(b);
+                xjb_j(b, go);
+                xjb_bind(b, taken);
+                emit_cycles(e, i->cyc);
+                xjb_imm(b, 7, nat.target);
+                xj_s32i(e, 7, 2, o_pc);
+                xj_retw_n(e);
+                xjb_bind(b, go);
+            }
+            else if (nat.cc == 0)                           /* DBT: plain fall through */
+                emit_cycles(e, cyc_fall);
+            if (last)
+            {
+                xj_addi(e, 7, 5, len);
+                xj_s32i(e, 7, 2, o_pc);
+                break;
+            }
+            int more = xjb_label(b);
+            xjb_bi(b, xj_bgei, 6, 1, more);
+            xj_addi(e, 7, 5, len);
+            xj_s32i(e, 7, 2, o_pc);
+            xj_retw_n(e);
+            xjb_bind(b, more);
+            xj_addi(e, 5, 5, len);
+            continue;
+        }
         if (classify(i, &nat))
         {
             m68kjit_stats.native++;

@@ -48,7 +48,7 @@ static uint16_t native_form(void)
     uint32_t r = rnd();
     int rx = (r >> 4) & 7, ry = (r >> 7) & 7, ss = (r >> 10) % 3;
     int smode = (int[]){0, 1, 7}[(r >> 12) % 3], sreg = smode == 7 ? 4 : ry;
-    switch ((r >> 16) % 12)
+    switch ((r >> 16) % 13)
     {
     case 0: return 0x7000 | rx << 9 | (r >> 20 & 0xFF);                                   /* MOVEQ */
     case 1: return (int[]){0x1000, 0x3000, 0x2000}[ss] | rx << 9 | ((r >> 20) & 1) << 6 | smode << 3 | sreg;   /* MOVE/MOVEA */
@@ -60,6 +60,7 @@ static uint16_t native_form(void)
     case 8: return ((r >> 20) & 1 ? 0x4A00 : 0x4200) | ss << 6 | ry;                        /* TST, CLR */
     case 9: return (int[]){0x4840, 0x4880, 0x48C0}[(r >> 20) % 3] | ry;                    /* SWAP EXT */
     case 10: { int m = (int[]){2, 5, 7}[(r >> 20) % 3]; return 0x41C0 | rx << 9 | m << 3 | (m == 7 ? (r >> 22) % 3 : ry); }   /* LEA */
+    case 11: return 0x50C8 | ((r >> 20) & 0xF) << 8 | ry;                                   /* DBcc (disp: next word) */
     default: return 0x6000 | ((r >> 20) & 0xF) << 8 | (r >> 24 & 0xFE);                   /* Bcc: flags get used */
     }
 }
