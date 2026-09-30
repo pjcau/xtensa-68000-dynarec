@@ -20,6 +20,13 @@ static void step(void)
     USE_CYCLES(CYC_INSTRUCTION[REG_IR]);
 }
 
+static uint32_t rd8(uint32_t a) { return m68ki_read_8(a); }
+static uint32_t rd16(uint32_t a) { return m68ki_read_16(a); }
+static uint32_t rd32(uint32_t a) { return m68ki_read_32(a); }
+static void wr8(uint32_t a, uint32_t v) { m68ki_write_8(a, v); }
+static void wr16(uint32_t a, uint32_t v) { m68ki_write_16(a, v); }
+static void wr32(uint32_t a, uint32_t v) { m68ki_write_32(a, v); }
+
 bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint32_t))
 {
     m68kjit_host_t h = {
@@ -34,6 +41,8 @@ bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint3
         .cyc = CYC_INSTRUCTION,
         .cyc_bcc_notake_b = (int)CYC_BCC_NOTAKE_B, .cyc_bcc_notake_w = (int)CYC_BCC_NOTAKE_W,
         .cyc_dbcc_f_noexp = (int)CYC_DBCC_F_NOEXP, .cyc_dbcc_f_exp = (int)CYC_DBCC_F_EXP,
+        .read8 = rd8, .read16 = rd16, .read32 = rd32,
+        .write8 = wr8, .write16 = wr16, .write32 = wr32,
         .step = step,
         .is_code = is_code,
         .read_code16 = read_code16,

@@ -48,7 +48,9 @@ static uint16_t native_form(void)
     uint32_t r = rnd();
     int rx = (r >> 4) & 7, ry = (r >> 7) & 7, ss = (r >> 10) % 3;
     int smode = (int[]){0, 1, 7}[(r >> 12) % 3], sreg = smode == 7 ? 4 : ry;
-    switch ((r >> 16) % 13)
+    int mmode = (int[]){2, 3, 4, 5, 6, 7, 7}[(r >> 25) % 7], mreg = mmode == 7 ? (r >> 28) % 2 : rx;   /* (An) (An)+ -(An) (d16,An) (d8,An,Xn) abs.w abs.l */
+    int cmode = (int[]){2, 5, 6, 7, 7, 7, 7}[(r >> 25) % 7], creg = cmode == 7 ? (r >> 28) % 4 : rx;   /* control modes, PC-relative too */
+    switch ((r >> 16) % 21)                 /* 20: Bcc (default) */
     {
     case 0: return 0x7000 | rx << 9 | (r >> 20 & 0xFF);                                   /* MOVEQ */
     case 1: return (int[]){0x1000, 0x3000, 0x2000}[ss] | rx << 9 | ((r >> 20) & 1) << 6 | smode << 3 | sreg;   /* MOVE/MOVEA */
@@ -59,7 +61,15 @@ static uint16_t native_form(void)
     case 7: return 0xB100 | rx << 9 | ss << 6 | ry;                                         /* EOR Dn,Dm */
     case 8: return ((r >> 20) & 1 ? 0x4A00 : 0x4200) | ss << 6 | ry;                        /* TST, CLR */
     case 9: return (int[]){0x4840, 0x4880, 0x48C0}[(r >> 20) % 3] | ry;                    /* SWAP EXT */
-    case 10: { int m = (int[]){2, 5, 7}[(r >> 20) % 3]; return 0x41C0 | rx << 9 | m << 3 | (m == 7 ? (r >> 22) % 3 : ry); }   /* LEA */
+    case 10: return (int[]){0x41C0 | rx << 9, 0x4840, 0x4E80}[(r >> 20) % 3] | cmode << 3 | creg;   /* LEA PEA JSR */
+    case 18: return (r >> 20) & 1 ? 0x4E75 : 0x6100 | (r >> 21 & 0xFE);                     /* RTS, BSR */
+    case 19: return (int[]){0x1000, 0x3000, 0x2000}[ss] | rx << 9 | ((r >> 22) & 1) << 6 | 7 << 3 | (2 + (r >> 23) % 2);    /* MOVE (d16,PC)/(d8,PC,Xn) -> reg */
+    case 12: return (int[]){0x1000, 0x3000, 0x2000}[ss] | (mmode == 7 ? mreg : ry) << 9 | mmode << 6 | smode << 3 | sreg;   /* MOVE reg/imm -> mem */
+    case 13: return (int[]){0x1000, 0x3000, 0x2000}[ss] | rx << 9 | ((r >> 22) & 1) << 6 | mmode << 3 | mreg;                  /* MOVE mem -> reg */
+    case 14: return (int[]){0x8000, 0x9000, 0xB000, 0xC000, 0xD000}[(r >> 20) % 5] | rx << 9 | ((r >> 23) & 1) << 8 | ss << 6 | mmode << 3 | mreg;   /* ALU mem */
+    case 15: return (int[]){0x0000, 0x0200, 0x0400, 0x0600, 0x0A00, 0x0C00}[(r >> 20) % 6] | ss << 6 | ((r >> 23) & 1 ? mmode << 3 | mreg : ry);  /* xxxI */
+    case 16: return ((r >> 20) & 1 ? 0x4A00 : 0x4200) | ss << 6 | mmode << 3 | mreg;        /* TST/CLR mem */
+    case 17: return 0x5000 | rx << 9 | ((r >> 20) & 1) << 8 | ss << 6 | mmode << 3 | mreg;  /* ADDQ/SUBQ mem */
     case 11: return 0x50C8 | ((r >> 20) & 0xF) << 8 | ry;                                   /* DBcc (disp: next word) */
     default: return 0x6000 | ((r >> 20) & 0xF) << 8 | (r >> 24 & 0xFE);                   /* Bcc: flags get used */
     }
