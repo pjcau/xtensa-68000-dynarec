@@ -14,4 +14,4 @@ timeout $T stdbuf -oL qemu-system-xtensa -M esp32s3 -nographic -no-reboot \
   -drive file=qemu_efuse.bin,if=none,format=raw,id=efuse \
   -global driver=nvram.esp32s3.efuse,property=drive,value=efuse \
   -m 8M -global driver=ssi_psram,property=is_octal,value=true \
-  -serial mon:stdio ${QEMU_EXTRA} | grep -a --line-buffered -E "GBAJIT|GBAJITDUMP|Guru|abort|panic|PC  "
+  -serial mon:stdio ${QEMU_EXTRA} | grep -a --line-buffered -E "GBAJIT|GBAJITDUMP|RAMBLK|Memory dump|Guru|abort|panic|PC  "

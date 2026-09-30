@@ -95,6 +95,17 @@ static int16_t input_cb(unsigned port, unsigned device, unsigned index, unsigned
     if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return keys;
     return (keys >> id) & 1;
 }
+#ifdef MENU_SCRIPT
+/* -DMENU_SCRIPT: from a cold boot (no state), START or A for 8 frames every
+   4 seconds, like tapping through a game's menus (compatibility runs) */
+static unsigned script(int f)
+{
+    unsigned phase = f / 240;
+    if (f % 240 >= 8)
+        return 0;
+    return phase % 3 == 0 ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : (1 << RETRO_DEVICE_ID_JOYPAD_A);
+}
+#else
 /* INPUT="0-1200:128,100-110:256,400-410:256,700-710:256" of the reference runs */
 static unsigned script(int f)
 {
@@ -103,11 +114,16 @@ static unsigned script(int f)
     if ((f >= 100 && f <= 110) || (f >= 400 && f <= 410) || (f >= 700 && f <= 710)) m |= 256;
     return m;
 }
+#endif
 
 static void run(void *arg)
 {
     static int16_t audio[2 * 2048];
+#ifdef MENU_SCRIPT
+    const int N = 3600;
+#else
     const int N = 600;
+#endif
     uint16_t *screen = heap_caps_malloc(GBA_SCREEN_WIDTH * (GBA_SCREEN_HEIGHT + 1) * 2, MALLOC_CAP_SPIRAM);
     printf("GBAJIT start: screen %p, internal free %u KB\n", screen, (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
     gba_screen_pixels = screen;

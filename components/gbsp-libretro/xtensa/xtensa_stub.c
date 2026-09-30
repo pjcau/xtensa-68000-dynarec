@@ -49,7 +49,7 @@ u8 *memory_map_read[8 * 1024];
 u16 io_registers[512];
 
 xj_emit_t xt_es;
-xt_cold_t xt_cold[XT_COLD_MAX];   /* the block being translated (xt_emit_cold) */
+xt_cold_t xt_cold[XT_COLD_MAX + 1];   /* the block being translated (xt_emit_cold) */
 int xt_cold_n;
 
 /* the out-of-line emitters behind XT() (xtensa_emit.h) */
@@ -888,9 +888,37 @@ void init_emitter(bool must_swap)
   init_bios_hooks();
 }
 
+/* set when the game keeps rewriting its own code in RAM: every rewrite
+   drops and retranslates the block (gpSP's SMC handling), which then costs
+   far more than interpreting it; the app switches to execute_arm */
+int xt_give_up;
+static void xt_check_smc_storm(void)
+{
+  extern u32 xt_ram_translations;
+  static int storm;
+  const u32 n = xt_ram_translations;
+  storm = n > 1000 ? storm + 1 : 0;
+  xt_ram_translations = 0;
+  if ((storm >= 3 || n > 20000) && !xt_give_up)
+  {
+    xt_give_up = 1;
+    printf("GBAJIT: code in RAM rewritten continuously (%u blocks/frame), using the interpreter\n", (unsigned)n);
+  }
+}
+
 u32 execute_arm_translate(u32 cycles)
 {
   u32 target;
+  xt_check_smc_storm();
+  /* no translated code runs here: the RAM cache can go back to its start
+     (flush_translation_cache_ram only appends when called from helpers) */
+  if (ram_translation_ptr >= ram_translation_cache + RAM_TRANSLATION_CACHE_SIZE / 2)
+  {
+    extern int xt_ram_rewind;
+    xt_ram_rewind = 1;
+    flush_translation_cache_ram();
+    xt_ram_rewind = 0;
+  }
 #ifdef RETRO_GO
   m4a_dynarec_check();   /* once a frame, as execute_arm does */
 #endif

@@ -494,10 +494,14 @@ static __attribute__((noinline)) u8 *xt_sub_op(u8 *translation_ptr, int res, int
 }
 
 /* ---- cold code at the end of the block --------------------------------------- */
+#ifdef XT_NO_COLD        /* debug: everything inline */
+#define XT_COLD_MAX 0
+#else
 #define XT_COLD_MAX 40   /* x ~32 bytes: stays inside TRANSLATION_CACHE_LIMIT_THRESHOLD */
+#endif
 enum { XT_COLD_UPDATE, XT_COLD_EXIT, XT_COLD_REDIRECT };
 typedef struct { u8 *hot; u32 target_pc; u32 kind; } xt_cold_t;
-extern xt_cold_t xt_cold[XT_COLD_MAX];
+extern xt_cold_t xt_cold[XT_COLD_MAX + 1];
 extern int xt_cold_n;
 
 static __attribute__((noinline)) u8 *xt_emit_cold(u8 *translation_ptr, u32 stored_pc)

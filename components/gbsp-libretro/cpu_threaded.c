@@ -2578,12 +2578,24 @@ static void xt_l1_clear(void)
 #define XT_L1_FILL(key, ptr)
 #endif
 
+/* RAM blocks translated in this frame: a game that rewrites its own code
+   in a loop (NFS Underground: ~3000 per frame) is better off interpreted
+   (execute_arm_translate gives up, gbsp/main/main.c switches) */
+#ifdef XTENSA_ARCH
+u32 xt_ram_translations;
+#define XT_COUNT_RAM_TRANSLATION() (xt_ram_translations++)
+#else
+#define XT_COUNT_RAM_TRANSLATION() ((void)0)
+#endif
+
 /* GBAPROF: cycles spent translating (the dynarec's warm-up and new code) */
 #if defined(GBAPROF) && defined(XTENSA_ARCH)
 #include "esp_cpu.h"
-u32 xt_prof_translate_cycles, xt_prof_translate_blocks;
+u32 xt_prof_translate_cycles, xt_prof_translate_blocks, xt_prof_tr_region[16], xt_prof_tr_pc[4], xt_prof_rom_flush;
 #define TIMED_TRANSLATE(type, pc, ram)                                        \
   ({ u32 c0_ = esp_cpu_get_cycle_count();                                     \
+     xt_prof_tr_region[((pc) >> 24) & 15]++;                                  \
+     xt_prof_tr_pc[xt_prof_translate_blocks & 3] = (pc);                      \
      bool r_ = translate_block_##type(pc, ram);                               \
      xt_prof_translate_cycles += esp_cpu_get_cycle_count() - c0_;             \
      xt_prof_translate_blocks++; r_; })
@@ -2622,6 +2634,7 @@ XT_HOT u8 function_cc *block_lookup_translate_##type(u32 pc)                    
         bool result;                                                          \
         u8 *blkptr = ram_translation_ptr + block_prologue_size;               \
         trentry->offset_##type = blkptr - ram_translation_cache;              \
+        XT_COUNT_RAM_TRANSLATION();                                           \
         result = TIMED_TRANSLATE(type, pc, true);                             \
                                                                               \
         if (result)                                                           \
@@ -3220,6 +3233,24 @@ bool translate_block_arm(u32 pc, bool ram_region)
      words, and a 32-bit store ignores the low address bits) must be aligned */
   translation_ptr = (u8 *)(((uintptr_t)translation_ptr + 3) & ~(uintptr_t)3);
 #endif
+#ifdef XT_RAMLOG
+  if (ram_region)
+  {
+    printf("RAMBLK %s pc %08x off %05x len %u:", "arm", (unsigned)block_start_pc,
+           (unsigned)(ram_translation_ptr - ram_translation_cache), (unsigned)(translation_ptr - ram_translation_ptr));
+    for (u8 *q = ram_translation_ptr; q < translation_ptr; q++) printf(" %02x", *q);
+    printf("\n");
+  }
+#endif
+#ifdef XT_RAMLOG
+  if (ram_region)
+  {
+    printf("RAMBLK %s pc %08x off %05x len %u:", "thumb", (unsigned)block_start_pc,
+           (unsigned)(ram_translation_ptr - ram_translation_cache), (unsigned)(translation_ptr - ram_translation_ptr));
+    for (u8 *q = ram_translation_ptr; q < translation_ptr; q++) printf(" %02x", *q);
+    printf("\n");
+  }
+#endif
   if (ram_region)
     ram_translation_ptr = translation_ptr;
   else
@@ -3415,6 +3446,9 @@ void init_bios_hooks(void)
   rom_cache_watermark = (u32)(rom_translation_ptr - rom_translation_cache);
 }
 
+#ifdef XTENSA_ARCH
+int xt_ram_rewind;
+#endif
 void flush_translation_cache_ram(void)
 {
   /* Flushes RAM caches avoiding doing too much work (ie. wiping unused memory) */
@@ -3423,8 +3457,21 @@ void flush_translation_cache_ram(void)
    flush_ram_count, reg[REG_PC], iwram_code_min, iwram_code_max,
    ewram_code_min, ewram_code_max);*/
 
-  last_ram_translation_ptr = ram_translation_cache;
-  ram_translation_ptr = ram_translation_cache;
+#ifdef XTENSA_ARCH
+  /* A flush from inside a helper (self-modifying code, an I/O write, a full
+     cache during an indirect branch) must not rewrite the block the helper
+     returns into: the tags are cleared (every block is looked up and
+     translated again) but new code is appended after the old one, which
+     stays intact. execute_arm_translate rewinds at the start of a frame, when
+     no translated code is running (xt_ram_rewind); a nearly full cache
+     rewinds here. */
+  if (xt_ram_rewind ||
+      ram_translation_ptr >= ram_translation_cache + RAM_TRANSLATION_CACHE_SIZE / 8 * 7)
+#endif
+  {
+    last_ram_translation_ptr = ram_translation_cache;
+    ram_translation_ptr = ram_translation_cache;
+  }
 
   // Proceed to clean the SMC area if needed
   // (also try to memset as little as possible for performance)
@@ -3462,6 +3509,9 @@ void flush_translation_cache_rom(void)
   memset(rom_branch_hash, 0, sizeof(rom_branch_hash));
 #ifdef XTENSA_ARCH
   xt_l1_clear();
+#endif
+#if defined(GBAPROF) && defined(XTENSA_ARCH)
+  xt_prof_rom_flush++;
 #endif
 }
 

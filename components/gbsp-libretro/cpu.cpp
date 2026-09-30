@@ -1542,7 +1542,13 @@ extern "C" u32 m4a_dynarec_run(u32 pc, s32 *cycles)
 #endif
 #endif
 
+#ifdef HAVE_DYNAREC
+/* the dynarec build keeps the interpreter as a fallback only (games that
+   rewrite their own code in a loop): in flash, the internal RAM is short */
+void execute_arm(u32 cycles)
+#else
 IRAM_ATTR void execute_arm(u32 cycles)
+#endif
 {
   u32 opcode;
   u32 condition;
