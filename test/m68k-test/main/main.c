@@ -25,8 +25,16 @@ void app_main(void)
         if (fuzz_seed(1 + i, 32, bad < 20)) bad++;
         if ((i + 1) % 50 == 0) printf("M68K %d seeds, %d mismatches\n", i + 1, bad);
     }
-    printf("M68K FUZZ %d seeds, %d mismatches; blocks %u insns %u runs %u steps %u (%lld ms)\n",
-           n, bad, (unsigned)m68kjit_stats.blocks, (unsigned)m68kjit_stats.insns, (unsigned)m68kjit_stats.block_runs,
+    printf("M68K FUZZ %d seeds, %d mismatches; blocks %u insns %u native %u runs %u steps %u (%lld ms)\n",
+           n, bad, (unsigned)m68kjit_stats.blocks, (unsigned)m68kjit_stats.insns, (unsigned)m68kjit_stats.native, (unsigned)m68kjit_stats.block_runs,
            (unsigned)m68kjit_stats.steps, (esp_timer_get_time() - t0) / 1000);
+    /* the same with the ROM mostly made of the natively translated forms */
+    fuzz_native_bias = 85;
+    bad = 0;
+    uint32_t nat0 = m68kjit_stats.native, runs0 = m68kjit_stats.block_runs;
+    for (int i = 0; i < n; i++)
+        if (fuzz_seed(1001 + i, 32, bad < 20)) bad++;
+    printf("M68K NATIVE-HEAVY %d seeds, %d mismatches; native %u runs %u\n", n, bad,
+           (unsigned)(m68kjit_stats.native - nat0), (unsigned)(m68kjit_stats.block_runs - runs0));
     printf("M68K done\n");
 }

@@ -1,5 +1,5 @@
 /* fuzz_host: the differential test on the PC, with the C backend.
- *   ./fuzz_host [seeds] [first seed] */
+ *   ./fuzz_host [seeds] [first seed] [native bias %] */
 #include <stdio.h>
 #include <stdlib.h>
 #include "m68kjit.h"
@@ -12,6 +12,7 @@ int main(int argc, char **argv)
     int n = argc > 1 ? atoi(argv[1]) : 1000;
     uint32_t first = argc > 2 ? strtoul(argv[2], NULL, 0) : 1;
     if (fuzz_init()) { printf("init failed\n"); return 2; }
+    if (argc > 3) fuzz_native_bias = atoi(argv[3]);
     int bad = 0;
     for (int i = 0; i < n; i++)
         if (fuzz_seed(first + i, 32, bad < 20)) bad++;

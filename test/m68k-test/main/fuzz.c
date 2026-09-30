@@ -39,6 +39,31 @@ unsigned int m68k_read_disassembler_16(unsigned int a) { return m68k_read_memory
 unsigned int m68k_read_disassembler_32(unsigned int a) { return m68k_read_memory_32(a); }
 
 bool fuzz_translate = true;         /* false: the dynarec interprets everything (harness check) */
+/* percent of the generated instructions drawn from the forms m68kjit
+ * translates natively (register-only ALU, MOVE, MOVEQ, ADDQ, LEA, ...) */
+int fuzz_native_bias = 0;
+
+static uint16_t native_form(void)
+{
+    uint32_t r = rnd();
+    int rx = (r >> 4) & 7, ry = (r >> 7) & 7, ss = (r >> 10) % 3;
+    int smode = (int[]){0, 1, 7}[(r >> 12) % 3], sreg = smode == 7 ? 4 : ry;
+    switch ((r >> 16) % 12)
+    {
+    case 0: return 0x7000 | rx << 9 | (r >> 20 & 0xFF);                                   /* MOVEQ */
+    case 1: return (int[]){0x1000, 0x3000, 0x2000}[ss] | rx << 9 | ((r >> 20) & 1) << 6 | smode << 3 | sreg;   /* MOVE/MOVEA */
+    case 2: return 0x5000 | rx << 9 | ((r >> 20) & 1) << 8 | ss << 6 | ((r >> 21) & 1) << 3 | ry;         /* ADDQ/SUBQ */
+    case 3: case 4: case 5:
+        return (int[]){0x8000, 0x9000, 0xB000, 0xC000, 0xD000}[(r >> 20) % 5] | rx << 9 | ss << 6 | smode << 3 | sreg;  /* OR SUB CMP AND ADD */
+    case 6: return (int[]){0x9000, 0xB000, 0xD000}[(r >> 20) % 3] | rx << 9 | ((r >> 22) & 1 ? 7 : 3) << 6 | smode << 3 | sreg;   /* SUBA CMPA ADDA */
+    case 7: return 0xB100 | rx << 9 | ss << 6 | ry;                                         /* EOR Dn,Dm */
+    case 8: return ((r >> 20) & 1 ? 0x4A00 : 0x4200) | ss << 6 | ry;                        /* TST, CLR */
+    case 9: return (int[]){0x4840, 0x4880, 0x48C0}[(r >> 20) % 3] | ry;                    /* SWAP EXT */
+    case 10: { int m = (int[]){2, 5, 7}[(r >> 20) % 3]; return 0x41C0 | rx << 9 | m << 3 | (m == 7 ? (r >> 22) % 3 : ry); }   /* LEA */
+    default: return 0x6000 | ((r >> 20) & 0xF) << 8 | (r >> 24 & 0xFE);                   /* Bcc: flags get used */
+    }
+}
+
 static bool is_code(uint32_t a, int len) { return fuzz_translate && a < ROM_SIZE && a + len <= ROM_SIZE; }
 static uint16_t read_code16(uint32_t a) { return m68k_read_memory_16(a); }
 
@@ -83,7 +108,7 @@ static void setup(uint32_t seed)
     {
         if (rnd() % 8 == 0) { pc += 2 * (1 + rnd() % 4); continue; }
         uint16_t op;
-        do op = rnd(); while (!m68k_is_valid_instruction(op, M68K_CPU_TYPE_68000) || (op >> 12) == 0xA || (op >> 12) == 0xF
+        do op = (int)(rnd() % 100) < fuzz_native_bias ? native_form() : rnd(); while (!m68k_is_valid_instruction(op, M68K_CPU_TYPE_68000) || (op >> 12) == 0xA || (op >> 12) == 0xF
                              || op == 0x4AFC || (op & 0xFFF0) == 0x4E40 || op == 0x4E72 || op == 0x4E70);
         mem[pc] = op >> 8; mem[pc + 1] = op;
         int len = m68kjit_insn_len(op);

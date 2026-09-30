@@ -24,6 +24,9 @@ typedef struct
 {
     /* interpreter state the blocks read and write */
     uint32_t *pc, *ppc, *ir;
+    uint32_t *dar;                          /* D0-D7 then A0-A7 */
+    /* flags in Musashi's form: X and C in bit 8, N and V in bit 7, Z = 0 when set */
+    uint32_t *flag_x, *flag_n, *flag_z, *flag_v, *flag_c;
     int32_t *cycles;                        /* cycles left in the time slice */
     const m68kjit_handler_t *handlers;      /* opcode -> handler (65536) */
     const uint8_t *cyc;                     /* opcode -> base cycles (65536) */
@@ -42,7 +45,7 @@ void m68kjit_flush(void);                   /* drop every translated block */
 
 typedef struct
 {
-    uint32_t blocks, insns, block_runs, block_insns, steps, exits_pc, exits_cycles;
+    uint32_t blocks, insns, native, block_runs, block_insns, steps, exits_pc, exits_cycles;
 } m68kjit_stats_t;
 extern m68kjit_stats_t m68kjit_stats;
 

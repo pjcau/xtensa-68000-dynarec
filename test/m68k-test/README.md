@@ -24,14 +24,17 @@ hash of the RAM after every slice.
     ./docker.sh "idf.py set-target esp32s3 && idf.py build && ./qemu.sh 400"
 
 (`XJIT_IMAGE=xjit-idf` for the image with QEMU inside, see `docker/`.) The app
-first runs 20 seeds with translation off (the harness alone), then 300 seeds
-with native blocks:
+runs 20 seeds with translation off (the harness alone), 300 seeds of random
+valid code, then 300 seeds whose ROM is 85 % instructions the translator
+handles natively (`fuzz_native_bias`):
 
     M68K harness (no translation) 20 seeds, 0 mismatches
-    M68K FUZZ 300 seeds, 0 mismatches; blocks 4979 insns 99543 runs 124395 ...
+    M68K FUZZ 300 seeds, 0 mismatches; blocks 5217 insns 104207 native 12484 runs 132523 ...
+    M68K NATIVE-HEAVY 300 seeds, 0 mismatches; native 72302 runs 158069
 
-The block, instruction and run counts must equal the host run of the same seeds:
-the generated code leaves its blocks exactly where the C model does.
+The block, instruction and run counts of the first pass must equal the host run
+of the same seeds (`host/fuzz_host 300`): the generated code leaves its blocks
+exactly where the C model does.
 `-DCMAKE_C_FLAGS=-DM68KJIT_TRACE` prints the first block runs.
 
 Musashi 4.5's opcode and cycle tables (~800 KB) live in PSRAM here
