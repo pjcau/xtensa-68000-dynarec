@@ -40,7 +40,7 @@ Build switches of the test bench:
 
 | Switch | Effect |
 |---|---|
-| `GBAJIT=1` | build with the dynarec |
+| `GBAJIT=1` | build the test bench with the dynarec (the retro-go `gbsp` app has it by default; `GBAJIT=0` builds its interpreter alone) |
 | `-DMENU_SCRIPT` | cold boot (no state), START/A every 4 s: compatibility runs |
 | `-DXT_RAMLOG` | print every RAM-cache block: guest PC, offset, host bytes |
 | `-DXTDUMP` | print 4 KB of translated code at frame 300 (disassemble with `objdump -D -EL -b binary -m xtensa`) |

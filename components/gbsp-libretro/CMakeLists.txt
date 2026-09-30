@@ -1,9 +1,10 @@
 set(COMPONENT_SRCDIRS ".")
 set(COMPONENT_ADD_INCLUDEDIRS ". libretro/libretro-common/include")
 set(COMPONENT_REQUIRES "retro-go")
-# `GBAJIT=1 python rg_tool.py ... build gbsp`: gpSP's dynarec with the Xtensa
-# backend (xtensa/, esp32-emu-turbo) instead of the interpreter
-if(DEFINED ENV{GBAJIT} AND NOT "$ENV{GBAJIT}" STREQUAL "0")
+# gpSP's dynarec with the Xtensa backend (xtensa/) and the interpreter as its
+# fallback: the default. `GBAJIT=0 python rg_tool.py ... build gbsp` builds the
+# interpreter alone.
+if(NOT "$ENV{GBAJIT}" STREQUAL "0")
     list(APPEND COMPONENT_SRCDIRS "xtensa")
     set(COMPONENT_REQUIRES "retro-go xjit esp_mm")
 endif()
@@ -19,7 +20,7 @@ rg_setup_compile_options(
     -Wno-error=unused-label
     -Wno-unused-label
 )
-if(DEFINED ENV{GBAJIT} AND NOT "$ENV{GBAJIT}" STREQUAL "0")
+if(NOT "$ENV{GBAJIT}" STREQUAL "0")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC HAVE_DYNAREC XTENSA_ARCH SMALL_TRANSLATION_CACHE)
     # GBAJIT_IRAM=1 (experiment): small translation caches in internal RAM
     # (no PSRAM instruction fetch; needs CONFIG_ESP_SYSTEM_MEMPROT_FEATURE off)

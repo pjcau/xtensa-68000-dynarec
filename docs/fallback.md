@@ -1,6 +1,6 @@
 # Fallback to the interpreter, and saves
 
-Both engines are always in the app (the flash has no room for a second app): the
+The retro-go `gbsp` app is built with the dynarec by default (`GBAJIT=0` builds the interpreter alone). Both engines are always in the app (the flash has no room for a second app): the
 dynarec, and gpSP's interpreter (in flash, so it costs no internal RAM). A game
 switches to the interpreter automatically, and never back unless the user asks.
 
