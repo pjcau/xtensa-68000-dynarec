@@ -2555,6 +2555,29 @@ inline static ramtag_type* get_ram_tag(u16 tagval) {
   pc &= ~0x01                                                                 \
 
 
+/* Xtensa: the ROM block hash and the block headers are in PSRAM; a small
+   direct-mapped table in internal RAM answers most lookups (indirect
+   branches: bx lr, pop {pc}) without touching them. Emptied with the ROM
+   translation cache. */
+#ifdef XTENSA_ARCH
+#define XT_L1_N 512
+static u32 xt_l1_key[XT_L1_N];
+static u8 *xt_l1_ptr[XT_L1_N];
+#define XT_L1_SLOT(key) (((key) ^ ((key) >> 9)) & (XT_L1_N - 1))
+static void xt_l1_clear(void)
+{
+  memset(xt_l1_key, 0xFF, sizeof(xt_l1_key));   /* ~0: never a key (pc | thumb) */
+}
+#define XT_L1_LOOKUP(key)                                                     \
+  { u32 l1_ = XT_L1_SLOT(key);                                                \
+    if (xt_l1_key[l1_] == (key)) return xt_l1_ptr[l1_]; }
+#define XT_L1_FILL(key, ptr)                                                  \
+  { u32 l1_ = XT_L1_SLOT(key); xt_l1_key[l1_] = (key); xt_l1_ptr[l1_] = (ptr); }
+#else
+#define XT_L1_LOOKUP(key)
+#define XT_L1_FILL(key, ptr)
+#endif
+
 /* GBAPROF: cycles spent translating (the dynarec's warm-up and new code) */
 #if defined(GBAPROF) && defined(XTENSA_ARCH)
 #include "esp_cpu.h"
@@ -2613,6 +2636,7 @@ XT_HOT u8 function_cc *block_lookup_translate_##type(u32 pc)                    
     case 0x8 ... 0xD:                                                         \
     {                                                                         \
       u32 key = pc | thumb;                                                   \
+      XT_L1_LOOKUP(key);                                                      \
       u32 hash_target = ((key * 2654435761U) >> (32 - ROM_BRANCH_HASH_BITS))  \
                                               & (ROM_BRANCH_HASH_SIZE - 1);   \
                                                                               \
@@ -2623,8 +2647,12 @@ XT_HOT u8 function_cc *block_lookup_translate_##type(u32 pc)                    
       {                                                                       \
         bhdr = (hashhdr_type*)&rom_translation_cache[blk_offset];             \
         if(bhdr->pc_value == key)                                             \
-          return &rom_translation_cache[                                      \
+        {                                                                     \
+          u8 *found_ = &rom_translation_cache[                                \
                   blk_offset + sizeof(hashhdr_type) + block_prologue_size];   \
+          XT_L1_FILL(key, found_);                                            \
+          return found_;                                                      \
+        }                                                                     \
                                                                               \
         blk_offset = bhdr->next_entry;                                        \
         blk_offset_addr = &bhdr->next_entry;                                  \
@@ -3432,6 +3460,9 @@ void flush_translation_cache_rom(void)
   rom_translation_ptr      = &rom_translation_cache[rom_cache_watermark];
 
   memset(rom_branch_hash, 0, sizeof(rom_branch_hash));
+#ifdef XTENSA_ARCH
+  xt_l1_clear();
+#endif
 }
 
 void init_dynarec_caches(void)
@@ -3439,6 +3470,9 @@ void init_dynarec_caches(void)
   /* Initialize caches so that we can start initalizing the emitter. */
   rom_translation_ptr = last_rom_translation_ptr = &rom_translation_cache[0];
   memset(rom_branch_hash, 0, sizeof(rom_branch_hash));
+#ifdef XTENSA_ARCH
+  xt_l1_clear();
+#endif
 
   ram_translation_ptr = last_ram_translation_ptr = &ram_translation_cache[0];
   memset(iwram, 0, 0x8000);

@@ -119,8 +119,11 @@ static inline void m4a_wr32(u32 a, u32 v)
 /* Runs the loop from pc (m4a_pc_out or m4a_pc_in) until it exits or the
    cycles run out, pc becomes the next instruction. False (nothing done) for
    a PCM buffer outside work RAM or unaligned: the interpreter keeps it. */
-XT_HOT static bool m4a_run(u32 &pc, s32 &cycles, u32 &n_flag, u32 &z_flag, u32 &c_flag, u32 &v_flag)
+XT_HOT static bool m4a_run(u32 &pc, s32 &cycles_io, u32 &n_io, u32 &z_io, u32 &c_io, u32 &v_io)
 {
+  /* locals: through the references every step was a load and a store */
+  s32 cycles = cycles_io;
+  u32 n_flag = n_io, z_flag = z_io, c_flag = c_io, v_flag = v_io;
   const u32 base = m4a_base, stereo = (m4a_kind == 1);
   const s32 seq = ws_cyc_seq[3][1], nseq_b = ws_cyc_nseq[3][1];
   u32 r0 = reg[0], r1 = reg[1], r2 = reg[2], r3 = reg[3], r4 = reg[4], r5 = reg[5];
@@ -200,5 +203,7 @@ adds:
 out:
   reg[0] = r0; reg[1] = r1; reg[2] = r2; reg[3] = r3; reg[5] = r5;
   reg[6] = r6; reg[7] = r7; reg[8] = r8; reg[9] = r9; reg[12] = r12; reg[14] = r14;
+  cycles_io = cycles;
+  n_io = n_flag; z_io = z_flag; c_io = c_flag; v_io = v_flag;
   return true;
 }
