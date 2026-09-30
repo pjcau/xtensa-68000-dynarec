@@ -44,11 +44,7 @@ u16 palette_ram_converted[512];
 XT_EXT_BSS u8 ewram[(1024 * 256) << SMC_DETECTION];
 XT_EXT_BSS u8 vram[1024 * 96];
 #endif
-#ifdef XT_IRAM_CACHE   /* internal RAM goes to the translation caches instead */
-XT_EXT_BSS u8 iwram[(1024 * 32) << SMC_DETECTION];
-#else
-u8 iwram[(1024 * 32) << SMC_DETECTION];   /* internal RAM: the game's stack and hot code */
-#endif
+u8 iwram[(1024 * 32) << SMC_DETECTION];   /* internal RAM: the game's stack and hot code (PSRAM: 3-4% slower) */
 u8 *memory_map_read[8 * 1024];
 u16 io_registers[512];
 
