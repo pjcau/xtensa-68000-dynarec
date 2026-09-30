@@ -567,7 +567,7 @@ XT_HOT static void xt_store_vram16(u32 a, u32 v)
   wr16(&vram[a], v);
 }
 
-XT_HOT static u32 xt_store_u32(u32 address, u32 value)
+XT_HOT static u32 xt_store_u32_body(u32 address, u32 value)
 {
   u32 a;
   switch (address >> 24)
@@ -606,7 +606,7 @@ XT_HOT static u32 xt_store_u32(u32 address, u32 value)
   return 0;   /* BIOS, gamepak, EEPROM/backup (32-bit): ignored */
 }
 
-XT_HOT static u32 xt_store_aligned_u32(u32 address, u32 value)
+XT_HOT static u32 xt_store_aligned_u32_body(u32 address, u32 value)
 {
   u32 a;
   switch (address >> 24)
@@ -614,12 +614,12 @@ XT_HOT static u32 xt_store_aligned_u32(u32 address, u32 value)
   case 2: a = address & 0x3FFFC; wr32(&ewram[a], value); return 0;   /* no SMC check */
   case 3: a = address & 0x7FFC; wr32(&iwram[0x8000 + a], value); return 0;
   case 4: case 5: case 6: case 7:
-    return xt_store_u32(address, value);
+    return xt_store_u32_body(address, value);
   }
   return 0;
 }
 
-XT_HOT static u32 xt_store_u16(u32 address, u32 value)
+XT_HOT static u32 xt_store_u16_body(u32 address, u32 value)
 {
   u32 a;
   switch (address >> 24)
@@ -651,7 +651,7 @@ XT_HOT static u32 xt_store_u16(u32 address, u32 value)
   return 0;
 }
 
-XT_HOT static u32 xt_store_u8(u32 address, u32 value)
+XT_HOT static u32 xt_store_u8_body(u32 address, u32 value)
 {
   u32 a, d = (value & 0xFF) | ((value & 0xFF) << 8);   /* 16-bit bus: the byte twice */
   switch (address >> 24)
@@ -681,6 +681,22 @@ XT_HOT static u32 xt_store_u8(u32 address, u32 value)
   }
   return 0;
 }
+
+/* the entry points the translated code calls: the PC (0: none) and the cycles
+   left come as arguments and land in reg[] here, as the x86 code stored them
+   before the call (xtensa_emit_ops.h, xt_store_pc) */
+#define XT_STORE_ENTRY(name)                                                  \
+XT_HOT static u32 xt_store_##name(u32 address, u32 value, u32 pc, u32 cycles) \
+{                                                                            \
+  if (pc)                                                                    \
+    reg[REG_PC] = pc;                                                        \
+  reg[XT_CYC_SLOT] = cycles;                                                 \
+  return xt_store_##name##_body(address, value);                             \
+}
+XT_STORE_ENTRY(u8)
+XT_STORE_ENTRY(u16)
+XT_STORE_ENTRY(u32)
+XT_STORE_ENTRY(aligned_u32)
 
 /* ---- CPSR / SPSR / SWI ------------------------------------------------------- */
 static u32 xt_read_cpsr(void)

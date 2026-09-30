@@ -730,12 +730,19 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 #define xt_load(mem_type)                                                     \
   xt_call(XT_FN_LOAD_##mem_type)
 
-/* stores: a0 = address, a1 = value; may redirect (cycles in the slot, for
-   a halt) */
-#define xt_store(fn)                                                          \
-  XT(s32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);                            \
+/* stores: a0 = address, a1 = value, a2 = the PC to store in reg[REG_PC]
+   (0: leave it), a13 = cycles left; the handler writes both to reg[] (the
+   x86 code stored them before the call). May redirect: the jump goes
+   through the block's cold area. */
+#define xt_store_pc(fn, pc_value)                                             \
+  if (pc_value)                                                               \
+    generate_load_pc(a2, (pc_value));                                         \
+  else                                                                        \
+    XT(movi, reg_a2, 0);                                                      \
+  XT(mov, XT_S1, reg_cycles);                                                 \
   xt_call(fn);                                                                \
-  xt_jump_if_redirect()
+  xt_redirect_cold()
+#define xt_store(fn) xt_store_pc(fn, 0)
 
 #define arm_access_memory_load(mem_type)                                      \
   cycle_count += 2;                                                           \
@@ -746,8 +753,7 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 #define arm_access_memory_store(mem_type)                                     \
   cycle_count++;                                                              \
   generate_load_reg_pc(a1, rd, 12);                                           \
-  generate_store_reg_i32(pc + 4, REG_PC);                                     \
-  xt_store(XT_FN_STORE_##mem_type)                                            \
+  xt_store_pc(XT_FN_STORE_##mem_type, pc + 4)                                 \
 
 #define no_op                                                                 \
 
@@ -835,8 +841,7 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 #define arm_block_memory_final_store(writeback_type)                          \
   generate_load_reg_pc(a1, i, 12);                                            \
   arm_block_memory_writeback_post_store(writeback_type);                      \
-  generate_store_reg_i32(pc + 4, REG_PC);                                     \
-  xt_store(XT_FN_STORE_U32)                                                   \
+  xt_store_pc(XT_FN_STORE_U32, pc + 4)                                        \
 
 #define arm_block_memory_adjust_pc_store()                                    \
 
@@ -1105,8 +1110,7 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 #define thumb_access_memory_store(mem_type, reg_rd)                           \
   cycle_count++;                                                              \
   generate_load_reg(a1, reg_rd);                                              \
-  generate_store_reg_i32(pc + 2, REG_PC);                                     \
-  xt_store(XT_FN_STORE_##mem_type)                                            \
+  xt_store_pc(XT_FN_STORE_##mem_type, pc + 2)                                 \
 
 #define thumb_access_memory_generate_address_pc_relative(offset, _rb, _ro)    \
   generate_load_pc(a0, (offset))                                              \
@@ -1195,8 +1199,7 @@ static __attribute__((noinline)) u8 *xt_shift_reg(u8 *translation_ptr, int kind,
 
 #define thumb_block_memory_final_store()                                      \
   generate_load_reg(a1, i);                                                   \
-  generate_store_reg_i32(pc + 2, REG_PC);                                     \
-  xt_store(XT_FN_STORE_U32)                                                   \
+  xt_store_pc(XT_FN_STORE_U32, pc + 2)                                        \
 
 #define thumb_block_memory_final_no(access_type)                              \
   thumb_block_memory_final_##access_type()                                    \

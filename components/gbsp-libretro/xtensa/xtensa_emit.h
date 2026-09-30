@@ -238,6 +238,19 @@ static __attribute__((noinline)) u8 *xt_add_imm(u8 *translation_ptr, int ireg, u
     xt_fwd_b12(xt_go_on, translation_ptr);                                    \
   }
 
+/* the same, with the rare jump in the block's cold area: "beqz a10, +2; j cold"
+   in the hot path, "l32i a3, slot; jx a10" out of line */
+#define xt_redirect_cold()                                                    \
+  if (xt_cold_n < XT_COLD_MAX)                                                \
+  {                                                                           \
+    XT(beqz, reg_rv, 2);                                                      \
+    xt_cold[xt_cold_n].hot = translation_ptr;                                 \
+    xt_cold[xt_cold_n++].kind = XT_COLD_REDIRECT;                             \
+    XT(j, 0);                                                                 \
+  }                                                                           \
+  else                                                                        \
+    xt_jump_if_redirect()
+
 /* ---- cycle counter --------------------------------------------------------- */
 #define generate_cycle_update()                                               \
   translation_ptr = xt_add_imm(translation_ptr, reg_cycles, (u32)-(s32)cycle_count); \
@@ -429,7 +442,7 @@ static __attribute__((noinline)) u8 *xt_sub_op(u8 *translation_ptr, int res, int
 
 /* ---- cold code at the end of the block --------------------------------------- */
 #define XT_COLD_MAX 40   /* x ~32 bytes: stays inside TRANSLATION_CACHE_LIMIT_THRESHOLD */
-enum { XT_COLD_UPDATE, XT_COLD_EXIT };
+enum { XT_COLD_UPDATE, XT_COLD_EXIT, XT_COLD_REDIRECT };
 typedef struct { u8 *hot; u32 target_pc; u32 kind; } xt_cold_t;
 extern xt_cold_t xt_cold[XT_COLD_MAX];
 extern int xt_cold_n;
@@ -449,6 +462,12 @@ static __attribute__((noinline)) u8 *xt_emit_cold(u8 *translation_ptr, u32 store
       XT(l32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);
       XT(bnez, reg_rv, 2);                              /* over the j */
       XT(j, (int)((c->hot + 3) - (translation_ptr + 4)));
+      XT(jx, reg_rv);
+    }
+    else if (c->kind == XT_COLD_REDIRECT)
+    {
+      xt_patch_j(c->hot, translation_ptr);
+      XT(l32i, reg_cycles, reg_base, XT_CYC_SLOT * 4);
       XT(jx, reg_rv);
     }
     else
