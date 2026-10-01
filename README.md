@@ -59,6 +59,7 @@ fork, which includes this repository as a submodule.
 - [Fallback and saves](docs/fallback.md): when and how a game switches to the interpreter
 - [68000 frontend](docs/m68k.md): blocks on top of Musashi, native instructions, chaining, verification
 - [68000 roadmap](docs/roadmap-68000.md): steps 8a-8g done, the emulators next
+- [68000 code generation plan](docs/codegen-plan.md): from 70-80 to 20-25 bytes of Xtensa per 68000 instruction, steps F0-F6
 
 ## Quick start (QEMU, no board)
 

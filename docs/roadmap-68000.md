@@ -29,6 +29,7 @@ interpreter today, and there the CPU is most of the cost. How the frontend works
 | 9a | Glue for mame-go's Musashi 3.1; the fuzz against it (PC and QEMU, idle-loop skip included) | PC + QEMU | done |
 | 9b | mame-go behind `M68KJIT`: fixed-ROM ranges from the 68000's read map, partition room | board at the end | in progress |
 | 9c-9g | Board correctness (same frame hashes), speed, fallback and speed guard, compatibility with the webcam, docs | board | |
+| 9f | Compact code generation, F0-F6: 16-bit forms, IRQs between instructions, direct ROM/RAM access, pinned registers ([plan](codegen-plan.md)) | QEMU + board | planned |
 | 10 | gwenesis (Mega Drive), if it helps there (the VDP is its main cost) | board | |
 
 Lessons from the GBA that apply: hot C helpers in IRAM, core-1 work out of core
