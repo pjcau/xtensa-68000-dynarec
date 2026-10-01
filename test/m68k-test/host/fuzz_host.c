@@ -1,5 +1,5 @@
 /* fuzz_host: the differential test on the PC, with the C backend.
- *   ./fuzz_host [seeds] [first seed] [native bias %] */
+ *   ./fuzz_host [seeds] [first seed] [native bias %] [hot threshold] */
 #include <stdio.h>
 #include <stdlib.h>
 #include "m68kjit.h"
@@ -13,6 +13,7 @@ int main(int argc, char **argv)
     uint32_t first = argc > 2 ? strtoul(argv[2], NULL, 0) : 1;
     if (fuzz_init()) { printf("init failed\n"); return 2; }
     if (argc > 3) fuzz_native_bias = atoi(argv[3]);
+    if (argc > 4) glue_hot_threshold = atoi(argv[4]);
     int bad = 0;
     for (int i = 0; i < n; i++)
         if (fuzz_seed(first + i, 32, bad < 20)) bad++;

@@ -8,6 +8,8 @@
  *  - MOVE.l / MOVEM.l to -(An) write one 32-bit value (pd_long_split16 = false);
  *  - DBF (DBRA) adds none of the DBcc cycle adjustments (dbf_plain);
  *  - a shift or rotate by #n adds no per-bit cycles (shift_imm_plain);
+ *  - m68k_set_irq() takes the interrupt at once, also from inside a memory
+ *    handler: the flags must be current before every access (mem_may_interrupt);
  *  - M68K_MONITOR_PC: a jump calls change_pc32() (pc_changed);
  *  - MAMEGO: the generic idle-loop skip, checked on short backward branches
  *    (branch_back), fed by the write hash in m68ki_write_*() (the native code
@@ -20,8 +22,12 @@
 
 extern int m68ki_initial_cycles;
 
+/* interpreted steps per 1 MB of the 24-bit bus: where the dynarec does not run */
+uint32_t glue31_steps_by_mb[16];
+
 static void step(void)
 {
+    glue31_steps_by_mb[(REG_PC >> 20) & 15]++;
     REG_PPC = REG_PC;
     REG_IR = m68ki_read_imm_16();
     m68ki_instruction_jump_table[REG_IR]();
@@ -39,7 +45,7 @@ static void pc_changed(uint32_t pc) { (void)pc; m68ki_pc_changed(pc); }
 static void branch_back(void) { M68KI_IDLE_CHECK(); }
 #endif
 
-bool glue31_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint32_t))
+bool glue31_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint32_t), uint32_t code_size, int hot_threshold)
 {
     m68kjit_host_t h = {
         .pc = (uint32_t *)&REG_PC,
@@ -57,6 +63,7 @@ bool glue31_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uin
         .cyc_movem_w = (int)CYC_MOVEM_W, .cyc_movem_l = (int)CYC_MOVEM_L,
         .pd_long_split16 = false,
         .dbf_plain = true,
+        .mem_may_interrupt = true,
         .shift_imm_plain = true,
         .read8 = rd8, .read16 = rd16, .read32 = rd32,
         .write8 = wr8, .write16 = wr16, .write32 = wr32,
@@ -67,6 +74,8 @@ bool glue31_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uin
         .step = step,
         .is_code = is_code,
         .read_code16 = read_code16,
+        .code_size = code_size,
+        .hot_threshold = hot_threshold,
     };
     return m68kjit_init(&h);
 }

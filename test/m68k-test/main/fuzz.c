@@ -44,6 +44,7 @@ unsigned int fuzz_read16(unsigned int a) { return m68k_read_memory_16(a); }
 /* (3.1's m68kmame.h maps the disassembler reads onto the memory calls above;
  * the generator's instruction check comes from ../musashi31/shim_dasm.c) */
 static uint32_t pcc_count, pcc_last;
+int glue_hot_threshold;
 void fuzz31_change_pc(unsigned int pc) { pcc_count++; pcc_last = pc; }
 void fuzz31_idle_reset(void);
 extern unsigned int m68ki_idle_enable, m68ki_idle_io_lo, m68ki_idle_io_hi;
@@ -213,7 +214,7 @@ int fuzz_seed(uint32_t seed, int slices, bool verbose)
 
     m68k_set_context(snap_ctx);
     memcpy(mem, snap_mem, MEM_SIZE);
-    m68kjit_flush();
+    glue_jit_init(is_code, read_code16);     /* (flushes; picks up glue_hot_threshold) */
     m68ki_remaining_cycles = m68ki_initial_cycles = 0;
     pcc_count = pcc_last = 0;
 #ifdef FUZZ_MUSASHI31

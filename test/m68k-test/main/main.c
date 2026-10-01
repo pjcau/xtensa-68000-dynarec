@@ -56,5 +56,13 @@ void app_main(void)
     }
     fuzz_form = -1;
     printf("M68K BY-FORM %d families x 20 seeds, %d mismatches\n", FUZZ_FORMS, fbad);
+    /* translating hot blocks only (as the emulators do): same results */
+    glue_hot_threshold = 3;
+    fuzz_native_bias = 50;
+    int hbad2 = 0;
+    for (int i = 0; i < 150; i++)
+        if (fuzz_seed(9001 + i, 32, hbad2 < 20)) hbad2++;
+    printf("M68K HOT-3 150 seeds, %d mismatches\n", hbad2);
+    glue_hot_threshold = 0;
     printf("M68K done\n");
 }

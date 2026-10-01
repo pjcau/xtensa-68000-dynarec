@@ -27,6 +27,8 @@ static void wr8(uint32_t a, uint32_t v) { m68ki_write_8(a, v); }
 static void wr16(uint32_t a, uint32_t v) { m68ki_write_16(a, v); }
 static void wr32(uint32_t a, uint32_t v) { m68ki_write_32(a, v); }
 
+int glue_hot_threshold;                 /* the fuzz runs with 0 and with a threshold */
+
 bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint32_t))
 {
     m68kjit_host_t h = {
@@ -49,6 +51,7 @@ bool glue_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uint3
         .step = step,
         .is_code = is_code,
         .read_code16 = read_code16,
+        .hot_threshold = glue_hot_threshold,
     };
     return m68kjit_init(&h);
 }
