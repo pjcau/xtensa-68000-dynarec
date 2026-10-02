@@ -9,7 +9,14 @@
  *  - DBF (DBRA) adds none of the DBcc cycle adjustments (dbf_plain);
  *  - a shift or rotate by #n adds no per-bit cycles (shift_imm_plain);
  *  - m68k_set_irq() takes the interrupt at once, also from inside a memory
- *    handler: the flags must be current before every access (mem_may_interrupt);
+ *    handler, which would need the flags current before every access
+ *    (mem_may_interrupt). F2 of the code generation plan turns that off: on
+ *    the boards mame-go runs (Neo Geo, CPS1) the 68000's interrupts come
+ *    through MAME's timers, between instructions; the only direct
+ *    cpu_set_irq_line() calls from handlers go to the Z80. NEOPROF builds
+ *    count any interrupt raised inside a memory call-out of the dynarec
+ *    (glue31_irq_in_mem, in the M68KJIT report: it must stay 0);
+ *    -DM68KJIT_MEMIRQ restores the old code generation;
  *  - M68K_MONITOR_PC: a jump calls change_pc32() (pc_changed);
  *  - MAMEGO: the generic idle-loop skip, checked on short backward branches
  *    (branch_back), fed by the write hash in m68ki_write_*() (the native code
@@ -34,12 +41,23 @@ static void step(void)
     USE_CYCLES(CYC_INSTRUCTION[REG_IR]);
 }
 
-static uint32_t rd8(uint32_t a) { return m68ki_read_8(a); }
-static uint32_t rd16(uint32_t a) { return m68ki_read_16(a); }
-static uint32_t rd32(uint32_t a) { return m68ki_read_32(a); }
-static void wr8(uint32_t a, uint32_t v) { m68ki_write_8(a, v); }
-static void wr16(uint32_t a, uint32_t v) { m68ki_write_16(a, v); }
-static void wr32(uint32_t a, uint32_t v) { m68ki_write_32(a, v); }
+#ifdef NEOPROF
+/* F2's check: memory call-outs of the native code in progress, and the
+   interrupts m68000_set_irq_line() saw raised during one (m68kmame.c) */
+int glue31_in_mem;
+uint32_t glue31_irq_in_mem;
+#define IN_MEM(x) (glue31_in_mem++, (x), glue31_in_mem--)
+#define IN_MEM_R(x) ({ uint32_t v_; glue31_in_mem++; v_ = (x); glue31_in_mem--; v_; })
+#else
+#define IN_MEM(x) (x)
+#define IN_MEM_R(x) (x)
+#endif
+static uint32_t rd8(uint32_t a) { return IN_MEM_R(m68ki_read_8(a)); }
+static uint32_t rd16(uint32_t a) { return IN_MEM_R(m68ki_read_16(a)); }
+static uint32_t rd32(uint32_t a) { return IN_MEM_R(m68ki_read_32(a)); }
+static void wr8(uint32_t a, uint32_t v) { IN_MEM(m68ki_write_8(a, v)); }
+static void wr16(uint32_t a, uint32_t v) { IN_MEM(m68ki_write_16(a, v)); }
+static void wr32(uint32_t a, uint32_t v) { IN_MEM(m68ki_write_32(a, v)); }
 static void pc_changed(uint32_t pc) { (void)pc; m68ki_pc_changed(pc); }
 #ifdef MAMEGO
 static void branch_back(void) { M68KI_IDLE_CHECK(); }
@@ -63,7 +81,11 @@ bool glue31_jit_init(bool (*is_code)(uint32_t, int), uint16_t (*read_code16)(uin
         .cyc_movem_w = (int)CYC_MOVEM_W, .cyc_movem_l = (int)CYC_MOVEM_L,
         .pd_long_split16 = false,
         .dbf_plain = true,
+#ifdef M68KJIT_MEMIRQ
         .mem_may_interrupt = true,
+#else
+        .mem_may_interrupt = false,         /* F2: interrupts reach the 68000 between instructions */
+#endif
         .shift_imm_plain = true,
         .read8 = rd8, .read16 = rd16, .read32 = rd32,
         .write8 = wr8, .write16 = wr16, .write32 = wr32,
