@@ -35,6 +35,8 @@ void app_main(void)
         char bytes[160];
         m68kjit_stats_bytes(bytes, sizeof bytes);
         printf("M68K BYTES/INSN %s (code %u KB)\n", bytes, (unsigned)(m68kjit_stats.code_bytes >> 10));
+        m68kjit_stats_regs(bytes, sizeof bytes);
+        printf("M68K REGS %s\n", bytes);
     }
     /* the same with the ROM mostly made of the natively translated forms */
     fuzz_native_bias = 85;

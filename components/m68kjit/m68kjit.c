@@ -67,6 +67,22 @@ static int *bucket;                         /* 1 << HASH_BITS */
 static uint8_t *hot;                        /* 1 << HASH_BITS: times an address was reached without a block */
 m68kjit_stats_t m68kjit_stats;
 
+int m68kjit_stats_regs(char *buf, int cap)
+{
+    uint32_t u[16];
+    int n = 0;
+    memcpy(u, m68kjit_stats.reg_uses, sizeof u);
+    for (int k = 0; k < 6; k++)
+    {
+        int best = 0;
+        for (int r = 1; r < 16; r++) if (u[r] > u[best]) best = r;
+        if (!u[best]) break;
+        n += snprintf(buf + n, n < cap ? cap - n : 0, "%s%c%d %u", k ? " " : "", best < 8 ? 'D' : 'A', best & 7, (unsigned)u[best]);
+        u[best] = 0;
+    }
+    return n;
+}
+
 int m68kjit_stats_bytes(char *buf, int cap)
 {
     const m68kjit_stats_t *st = &m68kjit_stats;
@@ -116,12 +132,19 @@ static int n_extra;                         /* cycles a native instruction adds 
 #else
 #define NARROW 1
 #endif
+/* F0 for F4: every guest register access goes through a2 + o_r(reg) */
+static inline void count_reg(int as, int off)
+{
+    if (as == 2 && off >= o_dar && off < o_dar + 64) m68kjit_stats.reg_uses[(off - o_dar) >> 2]++;
+}
 static inline void ld32(xj_emit_t *e, int at, int as, int off)
 {
+    count_reg(as, off);
     if (NARROW && off >= 0 && off <= 60 && !(off & 3)) xj_l32i_n(e, at, as, off); else xj_l32i(e, at, as, off);
 }
 static inline void st32(xj_emit_t *e, int at, int as, int off)
 {
+    count_reg(as, off);
     if (NARROW && off >= 0 && off <= 60 && !(off & 3)) xj_s32i_n(e, at, as, off); else xj_s32i(e, at, as, off);
 }
 static inline void mov32(xj_emit_t *e, int at, int as) { if (NARROW) xj_mov_n(e, at, as); else xj_mov(e, at, as); }
