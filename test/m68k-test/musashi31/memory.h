@@ -1,6 +1,9 @@
 /* stand-in for MAME's memory.h: the 24-bit bus of the fuzz */
 #ifndef MEMORY_H
 #define MEMORY_H
+/* mame-go's placement attributes (IRAM code, internal-RAM data): nothing on the host */
+#define MAMEGO_HOT
+#define MAMEGO_DRAM
 unsigned int cpu_readmem32(unsigned int a);
 unsigned int cpu_readmem32_word(unsigned int a);
 unsigned int cpu_readmem32_dword(unsigned int a);

@@ -72,8 +72,15 @@ void m68kjit_flush(void);                   /* drop every translated block */
 typedef struct
 {
     uint32_t blocks, insns, native, links, block_runs, block_insns, steps, exits_pc, exits_cycles, flushes, code_bytes;
+    /* F0: Xtensa bytes and count per kind of translated 68000 instruction
+     * (0 register-only, 1 memory, 2 handler call, 3 branch), and the flag code */
+    uint32_t kind_bytes[4], kind_count[4], flag_bytes;
 } m68kjit_stats_t;
 extern m68kjit_stats_t m68kjit_stats;
+/* "reg 12.3 mem 40.1 call 52.0 br 30.2 flags 18% other 9.5" into buf: bytes per
+ * instruction of each kind, the flag share, the bytes per instruction outside
+ * the instructions (prologue, exits, literals) */
+int m68kjit_stats_bytes(char *buf, int cap);
 
 /* length in bytes of the 68000 instruction starting with this word */
 int m68kjit_insn_len(uint16_t op);

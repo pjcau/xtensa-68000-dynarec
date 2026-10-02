@@ -31,6 +31,11 @@ void app_main(void)
     printf("M68K FUZZ %d seeds, %d mismatches; blocks %u insns %u native %u runs %u steps %u (%lld ms)\n",
            n, bad, (unsigned)m68kjit_stats.blocks, (unsigned)m68kjit_stats.insns, (unsigned)m68kjit_stats.native, (unsigned)m68kjit_stats.block_runs,
            (unsigned)m68kjit_stats.steps, (esp_timer_get_time() - t0) / 1000);
+    {
+        char bytes[160];
+        m68kjit_stats_bytes(bytes, sizeof bytes);
+        printf("M68K BYTES/INSN %s (code %u KB)\n", bytes, (unsigned)(m68kjit_stats.code_bytes >> 10));
+    }
     /* the same with the ROM mostly made of the natively translated forms */
     fuzz_native_bias = 85;
     bad = 0;

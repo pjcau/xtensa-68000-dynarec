@@ -12,6 +12,7 @@
  * Two backends: portable C (the model; the host fuzz test runs it) and, on
  * Xtensa, native code generated with xjit that does the same.
  */
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -66,6 +67,25 @@ static int *bucket;                         /* 1 << HASH_BITS */
 static uint8_t *hot;                        /* 1 << HASH_BITS: times an address was reached without a block */
 m68kjit_stats_t m68kjit_stats;
 
+int m68kjit_stats_bytes(char *buf, int cap)
+{
+    const m68kjit_stats_t *st = &m68kjit_stats;
+    static const char *names[4] = {"reg", "mem", "call", "br"};
+    uint32_t total = 0, insns = 0;
+    int n = 0;
+    for (int k = 0; k < 4; k++)
+    {
+        total += st->kind_bytes[k];
+        insns += st->kind_count[k];
+        n += snprintf(buf + n, n < cap ? cap - n : 0, "%s %.1f ", names[k],
+                      st->kind_count[k] ? (double)st->kind_bytes[k] / st->kind_count[k] : 0.0);
+    }
+    n += snprintf(buf + n, n < cap ? cap - n : 0, "flags %u%% other %.1f",
+                  total ? (unsigned)(100 * (uint64_t)st->flag_bytes / total) : 0,
+                  insns && st->code_bytes > total ? (double)(st->code_bytes - total) / insns : 0.0);
+    return n;
+}
+
 #ifdef M68KJIT_XTENSA
 static insn_t tmp[M68KJIT_MAX_INSNS];       /* the block being translated */
 static xj_exec_t cache;
@@ -86,6 +106,37 @@ static uint32_t *volatile last_slot;
 static uint32_t stub;                       /* the unlinked stub */
 static int chain_label;                     /* the block being emitted: its chain entry */
 static int n_extra;                         /* cycles a native instruction adds to its table value */
+
+/* F1 (code generation plan): the density (16-bit) forms wherever the operands
+ * allow, the 24-bit ones otherwise; the same instruction either way. The guest
+ * registers sit at offsets 0..60 from a2 (base is the state's lowest address,
+ * dar[0] in every Musashi), inside l32i.n/s32i.n's reach. */
+#ifdef M68KJIT_WIDE                         /* -DM68KJIT_WIDE: the 24-bit forms only (the F0 baseline) */
+#define NARROW 0
+#else
+#define NARROW 1
+#endif
+static inline void ld32(xj_emit_t *e, int at, int as, int off)
+{
+    if (NARROW && off >= 0 && off <= 60 && !(off & 3)) xj_l32i_n(e, at, as, off); else xj_l32i(e, at, as, off);
+}
+static inline void st32(xj_emit_t *e, int at, int as, int off)
+{
+    if (NARROW && off >= 0 && off <= 60 && !(off & 3)) xj_s32i_n(e, at, as, off); else xj_s32i(e, at, as, off);
+}
+static inline void mov32(xj_emit_t *e, int at, int as) { if (NARROW) xj_mov_n(e, at, as); else xj_mov(e, at, as); }
+static inline void addi32(xj_emit_t *e, int at, int as, int imm)
+{
+    if (NARROW && (imm == -1 || (imm >= 1 && imm <= 15))) xj_addi_n(e, at, as, imm); else xj_addi(e, at, as, imm);
+}
+static inline void movi32(xj_emit_t *e, int at, int imm)
+{
+    if (NARROW && imm >= -32 && imm <= 95) xj_movi_n(e, at, imm); else xj_movi(e, at, imm);
+}
+
+/* F0: bytes of Xtensa code per kind of 68000 instruction, and the flag code */
+enum { K_REG, K_MEM, K_CALL, K_BRANCH };
+#define ACCOUNT(kind) do { m68kjit_stats.kind_bytes[kind] += e->pos - p0; m68kjit_stats.kind_count[kind]++; } while (0)
 #else
 static insn_t *insns;
 static int n_insns;
@@ -142,7 +193,7 @@ void m68kjit_flush(void)
     /* the unlinked stub: last_slot = a9 (the slot); return to m68kjit_run() */
     xjb_init(xb, scratch, SCRATCH_SIZE);
     xjb_lit(xb, 10, (uint32_t)(uintptr_t)&last_slot);
-    xj_s32i(&xb->e, 9, 10, 0);
+    st32(&xb->e, 9, 10, 0);
     xj_retw_n(&xb->e);
     stub = (uint32_t)(uintptr_t)install(xb);
 #else
@@ -497,7 +548,7 @@ static void load_src(xj_block_t *b, const nat_t *n, int size)
         xjb_imm(b, 8, n->simm);
     else
     {
-        xj_l32i(e, 8, 2, o_r(n->sreg));
+        ld32(e, 8, 2, o_r(n->sreg));
         if (size == SZ_B) xj_extui(e, 8, 8, 0, 8);
         else if (size == SZ_W) xj_extui(e, 8, 8, 0, 16);
     }
@@ -508,7 +559,7 @@ static void store_reg(xj_emit_t *e, int r, int reg, int size)
 {
     if (size == SZ_B) xj_s8i(e, r, 2, o_r(reg));
     else if (size == SZ_W) xj_s16i(e, r, 2, o_r(reg));
-    else xj_s32i(e, r, 2, o_r(reg));
+    else st32(e, r, 2, o_r(reg));
 }
 
 /* Flag liveness: the flags a later instruction (or the block's exit, a call
@@ -521,36 +572,40 @@ static int cur_live = FL_ALL;
 /* N and Z from the result in register r (masked to the size), V = C = 0 */
 static void flags_logic(xj_emit_t *e, int r, int size)
 {
+    int p0 = e->pos;
     if (LIVE(FL_N))
     {
-        if (size == SZ_B) xj_s32i(e, r, 2, o_n);
-        else { shr(e, 9, r, size == SZ_W ? 8 : 24); xj_s32i(e, 9, 2, o_n); }
+        if (size == SZ_B) st32(e, r, 2, o_n);
+        else { shr(e, 9, r, size == SZ_W ? 8 : 24); st32(e, 9, 2, o_n); }
     }
-    if (LIVE(FL_Z)) xj_s32i(e, r, 2, o_z);
-    if (LIVE(FL_V | FL_C)) xj_movi(e, 9, 0);
-    if (LIVE(FL_V)) xj_s32i(e, 9, 2, o_v);
-    if (LIVE(FL_C)) xj_s32i(e, 9, 2, o_c);
+    if (LIVE(FL_Z)) st32(e, r, 2, o_z);
+    if (LIVE(FL_V | FL_C)) movi32(e, 9, 0);
+    if (LIVE(FL_V)) st32(e, 9, 2, o_v);
+    if (LIVE(FL_C)) st32(e, 9, 2, o_c);
+    m68kjit_stats.flag_bytes += e->pos - p0;
 }
 
 /* CMP.l flags of a10 = a9 - a8 (CMPA) */
 static void flags_cmp32(xj_emit_t *e)
 {
-    if (LIVE(FL_Z)) xj_s32i(e, 10, 2, o_z);
-    if (LIVE(FL_N)) { shr(e, 11, 10, 24); xj_s32i(e, 11, 2, o_n); }
+    int p0 = e->pos;
+    if (LIVE(FL_Z)) st32(e, 10, 2, o_z);
+    if (LIVE(FL_N)) { shr(e, 11, 10, 24); st32(e, 11, 2, o_n); }
     if (LIVE(FL_V))
     {
         xj_xor(e, 11, 8, 9);
         xj_xor(e, 12, 10, 9);
         xj_and(e, 11, 11, 12);
         shr(e, 11, 11, 24);
-        xj_s32i(e, 11, 2, o_v);
+        st32(e, 11, 2, o_v);
     }
     if (LIVE(FL_C))
     {
         xj_saltu(e, 11, 9, 8);
         xj_slli(e, 11, 11, 8);
-        xj_s32i(e, 11, 2, o_c);
+        st32(e, 11, 2, o_c);
     }
+    m68kjit_stats.flag_bytes += e->pos - p0;
 }
 
 /* a10 = a9 (dst) <alu> a8 (src), both masked to the size, and the flags;
@@ -574,8 +629,8 @@ static void emit_alu(xj_emit_t *e, int alu, int size)
     /* N */
     if (LIVE(FL_N))
     {
-        if (sh) { shr(e, 11, 10, sh); xj_s32i(e, 11, 2, o_n); }
-        else xj_s32i(e, 10, 2, o_n);
+        if (sh) { shr(e, 11, 10, sh); st32(e, 11, 2, o_n); }
+        else st32(e, 10, 2, o_n);
     }
     /* V: add ((S^R) & (D^R)), sub/cmp ((S^D) & (R^D)) */
     if (LIVE(FL_V))
@@ -584,7 +639,7 @@ static void emit_alu(xj_emit_t *e, int alu, int size)
         else { xj_xor(e, 11, 8, 9); xj_xor(e, 12, 10, 9); }
         xj_and(e, 11, 11, 12);
         if (sh) shr(e, 11, 11, sh);
-        xj_s32i(e, 11, 2, o_v);
+        st32(e, 11, 2, o_v);
     }
     /* C (and X): the carry/borrow in bit 8 */
     if (LIVE(FL_C) || (alu != A_CMP && LIVE(FL_X)))
@@ -596,13 +651,13 @@ static void emit_alu(xj_emit_t *e, int alu, int size)
             xj_slli(e, 11, 11, 8);
         }
         else if (size == SZ_W) xj_srli(e, 11, 10, 8);
-        else xj_mov(e, 11, 10);
-        if (LIVE(FL_C)) xj_s32i(e, 11, 2, o_c);
-        if (alu != A_CMP && LIVE(FL_X)) xj_s32i(e, 11, 2, o_x);
+        else mov32(e, 11, 10);
+        if (LIVE(FL_C)) st32(e, 11, 2, o_c);
+        if (alu != A_CMP && LIVE(FL_X)) st32(e, 11, 2, o_x);
     }
     /* Z (the masked result, which the caller stores too) */
     if (size != SZ_L) xj_extui(e, 10, 10, 0, size == SZ_B ? 8 : 16);
-    if (LIVE(FL_Z)) xj_s32i(e, 10, 2, o_z);
+    if (LIVE(FL_Z)) st32(e, 10, 2, o_z);
 }
 
 static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
@@ -612,7 +667,7 @@ static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
     {
     case N_MOVEQ:
         xjb_imm(b, 8, n->simm);
-        xj_s32i(e, 8, 2, o_r(n->dst));
+        st32(e, 8, 2, o_r(n->dst));
         flags_logic(e, 8, SZ_L);
         break;
     case N_MOVE:
@@ -623,69 +678,69 @@ static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
     case N_MOVEA:
         load_src(b, n, SZ_L);
         if (n->size == SZ_W) xj_sext(e, 8, 8, 15);
-        xj_s32i(e, 8, 2, o_r(n->dst));
+        st32(e, 8, 2, o_r(n->dst));
         break;
     case N_ADDQA:
-        xj_l32i(e, 9, 2, o_r(n->dst));
-        xj_addi(e, 9, 9, (int32_t)n->simm);
-        xj_s32i(e, 9, 2, o_r(n->dst));
+        ld32(e, 9, 2, o_r(n->dst));
+        addi32(e, 9, 9, (int32_t)n->simm);
+        st32(e, 9, 2, o_r(n->dst));
         break;
     case N_ALUA:                                            /* ADDA SUBA CMPA: source sign-extended to 32 */
         load_src(b, n, SZ_L);
         if (n->size == SZ_W) xj_sext(e, 8, 8, 15);
-        xj_l32i(e, 9, 2, o_r(n->dst));
-        if (n->alu == A_ADD) { xj_add(e, 9, 9, 8); xj_s32i(e, 9, 2, o_r(n->dst)); break; }
-        if (n->alu == A_SUB) { xj_sub(e, 9, 9, 8); xj_s32i(e, 9, 2, o_r(n->dst)); break; }
+        ld32(e, 9, 2, o_r(n->dst));
+        if (n->alu == A_ADD) { xj_add(e, 9, 9, 8); st32(e, 9, 2, o_r(n->dst)); break; }
+        if (n->alu == A_SUB) { xj_sub(e, 9, 9, 8); st32(e, 9, 2, o_r(n->dst)); break; }
         /* CMPA: CMP.l flags */
         xj_sub(e, 10, 9, 8);
         flags_cmp32(e);
         break;
     case N_ALU:
         load_src(b, n, n->size);                            /* a8 = src */
-        xj_l32i(e, 9, 2, o_r(n->dst));                      /* a9 = dst */
+        ld32(e, 9, 2, o_r(n->dst));                      /* a9 = dst */
         if (n->size != SZ_L) xj_extui(e, 9, 9, 0, n->size == SZ_B ? 8 : 16);
         emit_alu(e, n->alu, n->size);
         if (n->alu != A_CMP) store_reg(e, 10, n->dst, n->size);
         break;
     case N_TST:
-        xj_l32i(e, 8, 2, o_r(n->dst));
+        ld32(e, 8, 2, o_r(n->dst));
         if (n->size != SZ_L) xj_extui(e, 8, 8, 0, n->size == SZ_B ? 8 : 16);
         flags_logic(e, 8, n->size);
         break;
     case N_CLR:
-        xj_movi(e, 8, 0);
+        movi32(e, 8, 0);
         store_reg(e, 8, n->dst, n->size);
         flags_logic(e, 8, SZ_B);                            /* N = Z = V = C = 0 */
         break;
     case N_SWAP:
-        xj_l32i(e, 8, 2, o_r(n->dst));
+        ld32(e, 8, 2, o_r(n->dst));
         xj_ssai(e, 16);
         xj_src(e, 8, 8, 8);
-        xj_s32i(e, 8, 2, o_r(n->dst));
+        st32(e, 8, 2, o_r(n->dst));
         flags_logic(e, 8, SZ_L);
         break;
     case N_EXTW:                                            /* low word = sign-extended low byte */
-        xj_l32i(e, 8, 2, o_r(n->dst));
+        ld32(e, 8, 2, o_r(n->dst));
         xj_sext(e, 8, 8, 7);
         xj_s16i(e, 8, 2, o_r(n->dst));
         xj_extui(e, 8, 8, 0, 16);
         flags_logic(e, 8, SZ_W);
         break;
     case N_EXTL:
-        xj_l32i(e, 8, 2, o_r(n->dst));
+        ld32(e, 8, 2, o_r(n->dst));
         xj_sext(e, 8, 8, 15);
-        xj_s32i(e, 8, 2, o_r(n->dst));
+        st32(e, 8, 2, o_r(n->dst));
         flags_logic(e, 8, SZ_L);
         break;
     case N_SHIFT:
     {
         int w = n->size * 8, k = n->simm, t = n->alu;
-        xj_l32i(e, 8, 2, o_r(n->dst));                      /* a8 = src (masked) */
+        ld32(e, 8, 2, o_r(n->dst));                      /* a8 = src (masked) */
         if (w < 32) xj_extui(e, 8, 8, 0, w);
         switch (t)
         {
         case 0:                                             /* ASR */
-            if (w < 32) xj_sext(e, 10, 8, w - 1); else xj_mov(e, 10, 8);
+            if (w < 32) xj_sext(e, 10, 8, w - 1); else mov32(e, 10, 8);
             xj_srai(e, 10, 10, k);
             if (w < 32) xj_extui(e, 10, 10, 0, w);
             break;
@@ -698,7 +753,7 @@ static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
         {
             int r = t == 6 ? k : w - k;                     /* rotate right by r */
             if (w == 32) { xj_ssai(e, r); xj_src(e, 10, 8, 8); }
-            else if (r == w) xj_mov(e, 10, 8);
+            else if (r == w) mov32(e, 10, 8);
             else
             {
                 xj_srli(e, 10, 8, r);
@@ -717,47 +772,47 @@ static void emit_native(xj_block_t *b, const insn_t *i, const nat_t *n)
             if (cbit == -1) xj_extui(e, 11, 10, 0, 1);
             else if (cbit == -2) xj_extui(e, 11, 10, w - 1, 1);
             else if (cbit < w) xj_extui(e, 11, 8, cbit, 1);
-            else xj_movi(e, 11, 0);
+            else movi32(e, 11, 0);
             xj_slli(e, 11, 11, 8);
-            if (LIVE(FL_C)) xj_s32i(e, 11, 2, o_c);
-            if (t < 6 && LIVE(FL_X)) xj_s32i(e, 11, 2, o_x);   /* rotations keep X */
+            if (LIVE(FL_C)) st32(e, 11, 2, o_c);
+            if (t < 6 && LIVE(FL_X)) st32(e, 11, 2, o_x);   /* rotations keep X */
         }
         /* N, Z */
         if (LIVE(FL_N))
         {
-            if (w == 8) xj_s32i(e, 10, 2, o_n);
-            else { shr(e, 11, 10, w - 8); xj_s32i(e, 11, 2, o_n); }
+            if (w == 8) st32(e, 10, 2, o_n);
+            else { shr(e, 11, 10, w - 8); st32(e, 11, 2, o_n); }
         }
-        if (LIVE(FL_Z)) xj_s32i(e, 10, 2, o_z);
+        if (LIVE(FL_Z)) st32(e, 10, 2, o_z);
         /* V: ASL only, set when the top k+1 bits of src are not all equal */
         if (!LIVE(FL_V))
             ;
         else if (t == 1)
         {
             if (k + 1 > w)                                  /* ASL.b #8: V = src != 0 */
-                xj_mov(e, 9, 8);
+                mov32(e, 9, 8);
             else
             {
                 xj_extui(e, 9, 8, w - 1 - k, k + 1);
                 xjb_imm(b, 12, (1u << (k + 1)) - 1);
                 xj_sub(e, 12, 9, 12);                       /* 0 when all ones */
-                xj_movi(e, 13, 0);
+                movi32(e, 13, 0);
                 xj_moveqz(e, 9, 13, 12);                    /* all ones -> 0 */
             }
-            xj_movi(e, 13, 0x80);
+            movi32(e, 13, 0x80);
             xj_movnez(e, 9, 13, 9);                         /* nonzero -> 0x80 */
-            xj_s32i(e, 9, 2, o_v);
+            st32(e, 9, 2, o_v);
         }
         else
         {
-            xj_movi(e, 9, 0);
-            xj_s32i(e, 9, 2, o_v);
+            movi32(e, 9, 0);
+            st32(e, 9, 2, o_v);
         }
         break;
     }
     case N_LEA:
         emit_ea(b, &n->mem, SZ_L);
-        xj_s32i(e, 4, 2, o_r(n->dst));
+        st32(e, 4, 2, o_r(n->dst));
         break;
     }
 }
@@ -775,31 +830,31 @@ static void emit_ea(xj_block_t *b, const opnd_t *o, int size)
     int step = size == SZ_B && o->reg == 15 ? 2 : size;         /* A7 stays even */
     switch (o->kind)
     {
-    case O_AI: xj_l32i(e, 4, 2, o_r(o->reg)); break;
+    case O_AI: ld32(e, 4, 2, o_r(o->reg)); break;
     case O_PI:
-        xj_l32i(e, 4, 2, o_r(o->reg));
-        xj_addi(e, 9, 4, step);
-        xj_s32i(e, 9, 2, o_r(o->reg));
+        ld32(e, 4, 2, o_r(o->reg));
+        addi32(e, 9, 4, step);
+        st32(e, 9, 2, o_r(o->reg));
         break;
     case O_PD:
-        xj_l32i(e, 4, 2, o_r(o->reg));
-        xj_addi(e, 4, 4, -step);
-        xj_s32i(e, 4, 2, o_r(o->reg));
+        ld32(e, 4, 2, o_r(o->reg));
+        addi32(e, 4, 4, -step);
+        st32(e, 4, 2, o_r(o->reg));
         break;
     case O_DI:
-        xj_l32i(e, 4, 2, o_r(o->reg));
-        if ((int32_t)o->ext >= -128 && (int32_t)o->ext <= 127) xj_addi(e, 4, 4, (int32_t)o->ext);
+        ld32(e, 4, 2, o_r(o->reg));
+        if ((int32_t)o->ext >= -128 && (int32_t)o->ext <= 127) addi32(e, 4, 4, (int32_t)o->ext);
         else { xjb_imm(b, 9, o->ext); xj_add(e, 4, 4, 9); }
         break;
     case O_IX: case O_PCIX:                                     /* base + Xn(.w sign-extended) + d8 */
     {
         int x = o->ext >> 12;                                   /* D0-D7, A0-A7 */
-        if (o->kind == O_IX) xj_l32i(e, 4, 2, o_r(o->reg));
+        if (o->kind == O_IX) ld32(e, 4, 2, o_r(o->reg));
         else xjb_imm(b, 4, o->extpc);
-        xj_l32i(e, 9, 2, o_r(x));
+        ld32(e, 9, 2, o_r(x));
         if (!(o->ext & 0x800)) xj_sext(e, 9, 9, 15);
         xj_add(e, 4, 4, 9);
-        if ((int8_t)o->ext) xj_addi(e, 4, 4, (int8_t)o->ext);
+        if ((int8_t)o->ext) addi32(e, 4, 4, (int8_t)o->ext);
         break;
     }
     default: xjb_imm(b, 4, o->ext); break;                      /* abs.w, abs.l, (d16,PC) */
@@ -812,7 +867,7 @@ static void emit_pc(xj_block_t *b, uint32_t pc, uint32_t *stored)
 {
     if (*stored == pc) return;
     xjb_imm(b, 6, pc);
-    xj_s32i(&b->e, 6, 2, o_pc);
+    st32(&b->e, 6, 2, o_pc);
     *stored = pc;
 }
 
@@ -820,7 +875,7 @@ static void emit_pc(xj_block_t *b, uint32_t pc, uint32_t *stored)
 static void emit_read(xj_block_t *b, int size)
 {
     xjb_lit(b, 8, (uint32_t)(uintptr_t)(size == SZ_B ? H.read8 : size == SZ_W ? H.read16 : H.read32));
-    xj_mov(&b->e, 10, 4);
+    mov32(&b->e, 10, 4);
     xj_callx8(&b->e, 8);
 }
 
@@ -828,10 +883,10 @@ static void emit_read(xj_block_t *b, int size)
 static void emit_write(xj_block_t *b, int r, int size)
 {
     xj_emit_t *e = &b->e;
-    if (size == SZ_L) xj_mov(e, 11, r);
+    if (size == SZ_L) mov32(e, 11, r);
     else xj_extui(e, 11, r, 0, size == SZ_B ? 8 : 16);
     xjb_lit(b, 8, (uint32_t)(uintptr_t)(size == SZ_B ? H.write8 : size == SZ_W ? H.write16 : H.write32));
-    xj_mov(e, 10, 4);
+    mov32(e, 10, 4);
     xj_callx8(e, 8);
 }
 
@@ -841,11 +896,11 @@ static void emit_write_split(xj_block_t *b, int r)
     xj_emit_t *e = &b->e;
     xj_extui(e, 11, r, 0, 16);
     xjb_lit(b, 8, (uint32_t)(uintptr_t)H.write16);
-    xj_addi(e, 10, 4, 2);
+    addi32(e, 10, 4, 2);
     xj_callx8(e, 8);
     xj_extui(e, 11, r, 16, 16);
     xjb_lit(b, 8, (uint32_t)(uintptr_t)H.write16);
-    xj_mov(e, 10, 4);
+    mov32(e, 10, 4);
     xj_callx8(e, 8);
 }
 
@@ -854,9 +909,9 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
     xj_emit_t *e = &b->e;
     uint32_t stored = 0xFFFFFFFF;
     /* the state an exception taken inside a memory handler would see */
-    xj_s32i(e, 5, 2, o_ppc);
+    st32(e, 5, 2, o_ppc);
     xjb_imm(b, 7, i->op);
-    xj_s32i(e, 7, 2, o_ir);
+    st32(e, 7, 2, o_ir);
     switch (n->kind)
     {
     case N_MOVE_M:
@@ -865,12 +920,12 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
             emit_pc(b, n->pc_read, &stored);
             emit_ea(b, &n->mem, n->size);
             emit_read(b, n->size);
-            xj_mov(e, 7, 10);
+            mov32(e, 7, 10);
         }
         else
         {
             load_src(b, n, n->size);
-            xj_mov(e, 7, 8);
+            mov32(e, 7, 8);
         }
         if (n->mdst == 2)
         {
@@ -884,7 +939,7 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         else if (n->mdst == 1)                              /* MOVEA */
         {
             if (n->size == SZ_W) xj_sext(e, 7, 7, 15);
-            xj_s32i(e, 7, 2, o_r(n->dst));
+            st32(e, 7, 2, o_r(n->dst));
             break;
         }
         else
@@ -895,11 +950,11 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, n->size);
         emit_read(b, n->size);
-        if (n->cmpi) { xj_mov(e, 9, 10); xjb_imm(b, 8, n->simm); }
+        if (n->cmpi) { mov32(e, 9, 10); xjb_imm(b, 8, n->simm); }
         else
         {
-            xj_mov(e, 8, 10);
-            xj_l32i(e, 9, 2, o_r(n->dst));
+            mov32(e, 8, 10);
+            ld32(e, 9, 2, o_r(n->dst));
             if (n->size != SZ_L) xj_extui(e, 9, 9, 0, n->size == SZ_B ? 8 : 16);
         }
         emit_alu(e, n->alu, n->size);
@@ -909,11 +964,11 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, n->size);
         emit_read(b, n->size);
-        xj_mov(e, 8, 10);
+        mov32(e, 8, 10);
         if (n->size == SZ_W) xj_sext(e, 8, 8, 15);
-        xj_l32i(e, 9, 2, o_r(n->dst));
-        if (n->alu == A_ADD) { xj_add(e, 9, 9, 8); xj_s32i(e, 9, 2, o_r(n->dst)); break; }
-        if (n->alu == A_SUB) { xj_sub(e, 9, 9, 8); xj_s32i(e, 9, 2, o_r(n->dst)); break; }
+        ld32(e, 9, 2, o_r(n->dst));
+        if (n->alu == A_ADD) { xj_add(e, 9, 9, 8); st32(e, 9, 2, o_r(n->dst)); break; }
+        if (n->alu == A_SUB) { xj_sub(e, 9, 9, 8); st32(e, 9, 2, o_r(n->dst)); break; }
         xj_sub(e, 10, 9, 8);                                /* CMPA: CMP.l flags */
         flags_cmp32(e);
         break;
@@ -921,58 +976,58 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, n->size);
         emit_read(b, n->size);
-        xj_mov(e, 9, 10);
+        mov32(e, 9, 10);
         load_src(b, n, n->size);
         emit_alu(e, n->alu, n->size);
-        xj_mov(e, 7, 10);
+        mov32(e, 7, 10);
         emit_write(b, 7, n->size);
         break;
     case N_TST_M:
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, n->size);
         emit_read(b, n->size);
-        xj_mov(e, 7, 10);
+        mov32(e, 7, 10);
         flags_logic(e, 7, n->size);
         break;
     case N_PEA:                                             /* SP -= 4; write(SP, ea) */
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, SZ_L);
-        xj_mov(e, 7, 4);
-        xj_l32i(e, 4, 2, o_r(15));
-        xj_addi(e, 4, 4, -4);
-        xj_s32i(e, 4, 2, o_r(15));
+        mov32(e, 7, 4);
+        ld32(e, 4, 2, o_r(15));
+        addi32(e, 4, 4, -4);
+        st32(e, 4, 2, o_r(15));
         emit_write(b, 7, SZ_L);
         break;
     case N_JSR: case N_BSR:                                 /* push the return address, PC = target */
         emit_pc(b, i->next, &stored);
-        if (n->kind == N_JSR) { emit_ea(b, &n->mem, SZ_L); xj_mov(e, 7, 4); }
+        if (n->kind == N_JSR) { emit_ea(b, &n->mem, SZ_L); mov32(e, 7, 4); }
         else xjb_imm(b, 7, n->target);
-        xj_l32i(e, 4, 2, o_r(15));
-        xj_addi(e, 4, 4, -4);
-        xj_s32i(e, 4, 2, o_r(15));
+        ld32(e, 4, 2, o_r(15));
+        addi32(e, 4, 4, -4);
+        st32(e, 4, 2, o_r(15));
         xjb_imm(b, 6, i->next);
         emit_write(b, 6, SZ_L);
-        xj_s32i(e, 7, 2, o_pc);                             /* (a PC changed by the write is overwritten, as in Musashi) */
+        st32(e, 7, 2, o_pc);                             /* (a PC changed by the write is overwritten, as in Musashi) */
         if (n->kind == N_BSR && H.branch_back && n->target < i->pc && i->pc - n->target <= 32)
         {                                                   /* m68ki_branch_8/16 */
-            xj_s32i(e, 5, 2, o_ppc);
+            st32(e, 5, 2, o_ppc);
             xjb_lit(b, 8, (uint32_t)(uintptr_t)H.branch_back);
             xj_callx8(e, 8);
         }
         else if (n->kind == N_JSR && H.pc_changed)          /* m68ki_jump */
         {
-            xj_mov(e, 10, 7);
+            mov32(e, 10, 7);
             xjb_lit(b, 8, (uint32_t)(uintptr_t)H.pc_changed);
             xj_callx8(e, 8);
         }
         break;
     case N_RTS:                                             /* SP += 4; PC = read(SP - 4) */
         emit_pc(b, i->next, &stored);
-        xj_l32i(e, 4, 2, o_r(15));
-        xj_addi(e, 9, 4, 4);
-        xj_s32i(e, 9, 2, o_r(15));
+        ld32(e, 4, 2, o_r(15));
+        addi32(e, 9, 4, 4);
+        st32(e, 9, 2, o_r(15));
         emit_read(b, SZ_L);
-        xj_s32i(e, 10, 2, o_pc);
+        st32(e, 10, 2, o_pc);
         if (H.pc_changed)                                   /* m68ki_jump */
         {
             xjb_lit(b, 8, (uint32_t)(uintptr_t)H.pc_changed);
@@ -986,36 +1041,36 @@ static void emit_mem(xj_block_t *b, const insn_t *i, const nat_t *n)
         int step = n->size, list = n->simm, count = 0;
         bool load = n->cmpi, pd = n->mem.kind == O_PD, pi = n->mem.kind == O_PI;
         emit_pc(b, n->pc_read, &stored);
-        if (pd || pi) xj_l32i(e, 4, 2, o_r(n->mem.reg));
+        if (pd || pi) ld32(e, 4, 2, o_r(n->mem.reg));
         else emit_ea(b, &n->mem, n->size);
         for (int k = 0; k < 16; k++)
         {
             if (!(list & (1 << k))) continue;
             int reg = pd ? 15 - k : k;
             count++;
-            if (pd) xj_addi(e, 4, 4, -step);
+            if (pd) addi32(e, 4, 4, -step);
             if (load)
             {
                 emit_read(b, n->size);
                 if (n->size == SZ_W) xj_sext(e, 10, 10, 15);
-                xj_s32i(e, 10, 2, o_r(reg));
+                st32(e, 10, 2, o_r(reg));
             }
             else
             {
-                xj_l32i(e, 7, 2, o_r(reg));
+                ld32(e, 7, 2, o_r(reg));
                 if (pd && n->size == SZ_L && H.pd_long_split16) emit_write_split(b, 7);
                 else emit_write(b, 7, n->size);
             }
-            if (!pd) xj_addi(e, 4, 4, step);
+            if (!pd) addi32(e, 4, 4, step);
         }
-        if (pd || pi) xj_s32i(e, 4, 2, o_r(n->mem.reg));
+        if (pd || pi) st32(e, 4, 2, o_r(n->mem.reg));
         n_extra = count << (n->size == SZ_L ? H.cyc_movem_l : H.cyc_movem_w);
         break;
     }
     case N_CLR_M:                                           /* a write of 0, no read (as Musashi) */
         emit_pc(b, n->pc_read, &stored);
         emit_ea(b, &n->mem, n->size);
-        xj_movi(e, 7, 0);
+        movi32(e, 7, 0);
         emit_write(b, 7, n->size);
         flags_logic(e, 7, SZ_B);
         break;
@@ -1030,57 +1085,57 @@ static void emit_cond(xj_block_t *b, int cc, int label)
     switch (cc)
     {
     case 0x4: case 0x5:                                     /* CC CS: C bit 8 */
-        xj_l32i(e, 8, 2, o_c);
+        ld32(e, 8, 2, o_c);
         xjb_bbi(b, cc == 5 ? xj_bbsi : xj_bbci, 8, 8, label);
         break;
     case 0x6: case 0x7:                                     /* NE EQ: Z */
-        xj_l32i(e, 8, 2, o_z);
+        ld32(e, 8, 2, o_z);
         xjb_bz(b, cc == 6 ? xj_bnez : xj_beqz, 8, label);
         break;
     case 0x8: case 0x9:                                     /* VC VS: V bit 7 */
-        xj_l32i(e, 8, 2, o_v);
+        ld32(e, 8, 2, o_v);
         xjb_bbi(b, cc == 9 ? xj_bbsi : xj_bbci, 8, 7, label);
         break;
     case 0xA: case 0xB:                                     /* PL MI: N bit 7 */
-        xj_l32i(e, 8, 2, o_n);
+        ld32(e, 8, 2, o_n);
         xjb_bbi(b, cc == 0xB ? xj_bbsi : xj_bbci, 8, 7, label);
         break;
     case 0xC: case 0xD:                                     /* GE LT: (N ^ V) bit 7 */
-        xj_l32i(e, 8, 2, o_n);
-        xj_l32i(e, 9, 2, o_v);
+        ld32(e, 8, 2, o_n);
+        ld32(e, 9, 2, o_v);
         xj_xor(e, 8, 8, 9);
         xjb_bbi(b, cc == 0xD ? xj_bbsi : xj_bbci, 8, 7, label);
         break;
     case 0x2:                                               /* HI: C clear and Z not set */
         skip = xjb_label(b);
-        xj_l32i(e, 8, 2, o_c);
+        ld32(e, 8, 2, o_c);
         xjb_bbi(b, xj_bbsi, 8, 8, skip);
-        xj_l32i(e, 8, 2, o_z);
+        ld32(e, 8, 2, o_z);
         xjb_bz(b, xj_bnez, 8, label);
         xjb_bind(b, skip);
         break;
     case 0x3:                                               /* LS: C set or Z set */
-        xj_l32i(e, 8, 2, o_c);
+        ld32(e, 8, 2, o_c);
         xjb_bbi(b, xj_bbsi, 8, 8, label);
-        xj_l32i(e, 8, 2, o_z);
+        ld32(e, 8, 2, o_z);
         xjb_bz(b, xj_beqz, 8, label);
         break;
     case 0xE:                                               /* GT: GE and NE */
         skip = xjb_label(b);
-        xj_l32i(e, 8, 2, o_n);
-        xj_l32i(e, 9, 2, o_v);
+        ld32(e, 8, 2, o_n);
+        ld32(e, 9, 2, o_v);
         xj_xor(e, 8, 8, 9);
         xjb_bbi(b, xj_bbsi, 8, 7, skip);
-        xj_l32i(e, 8, 2, o_z);
+        ld32(e, 8, 2, o_z);
         xjb_bz(b, xj_bnez, 8, label);
         xjb_bind(b, skip);
         break;
     case 0xF:                                               /* LE: LT or EQ */
-        xj_l32i(e, 8, 2, o_n);
-        xj_l32i(e, 9, 2, o_v);
+        ld32(e, 8, 2, o_n);
+        ld32(e, 9, 2, o_v);
         xj_xor(e, 8, 8, 9);
         xjb_bbi(b, xj_bbsi, 8, 7, label);
-        xj_l32i(e, 8, 2, o_z);
+        ld32(e, 8, 2, o_z);
         xjb_bz(b, xj_beqz, 8, label);
         break;
     }
@@ -1093,14 +1148,14 @@ static void emit_taken(xj_block_t *b, uint32_t pc, uint32_t target)
 {
     xj_emit_t *e = &b->e;
     xjb_imm(b, 7, target);
-    xj_s32i(e, 7, 2, o_pc);
+    st32(e, 7, 2, o_pc);
     if (H.branch_back && target < pc && pc - target <= 32)
     {
-        xj_s32i(e, 5, 2, o_ppc);                        /* a5 = pc of the branch */
-        xj_s32i(e, 6, 3, 0);                            /* the hook may give the slice away */
+        st32(e, 5, 2, o_ppc);                        /* a5 = pc of the branch */
+        st32(e, 6, 3, 0);                            /* the hook may give the slice away */
         xjb_lit(b, 8, (uint32_t)(uintptr_t)H.branch_back);
         xj_callx8(e, 8);
-        xj_l32i(e, 6, 3, 0);
+        ld32(e, 6, 3, 0);
     }
 }
 
@@ -1117,7 +1172,7 @@ static void emit_chain(xj_block_t *b)
         uint32_t *slot = &slots[n_slots++];
         *slot = stub;
         xjb_lit(b, 9, (uint32_t)(uintptr_t)slot);
-        xj_l32i(e, 8, 9, 0);
+        ld32(e, 8, 9, 0);
         xj_jx(e, 8);
     }
     xjb_bind(b, ret);
@@ -1127,15 +1182,15 @@ static void emit_chain(xj_block_t *b)
 /* cycles -= c (a6 = the new count) */
 static void emit_cycles(xj_emit_t *e, int c)
 {
-    xj_l32i(e, 6, 3, 0);
+    ld32(e, 6, 3, 0);
     if (c <= 128)
-        xj_addi(e, 6, 6, -c);
+        addi32(e, 6, 6, -c);
     else
     {
-        xj_movi(e, 7, c);
+        movi32(e, 7, c);
         xj_sub(e, 6, 6, 7);
     }
-    xj_s32i(e, 6, 3, 0);
+    st32(e, 6, 3, 0);
 }
 
 /* The block, as Xtensa (windowed ABI, called with callx8 from m68kjit_run).
@@ -1218,8 +1273,8 @@ static int flag_uses(const insn_t *i)
 static void cyc_sub(xj_emit_t *e, int c)
 {
     if (c == 0) return;
-    if (c <= 128) xj_addi(e, 6, 6, -c);
-    else { xj_movi(e, 7, c); xj_sub(e, 6, 6, 7); }
+    if (c <= 128) addi32(e, 6, 6, -c);
+    else { movi32(e, 7, c); xj_sub(e, 6, 6, 7); }
 }
 
 static void emit_block(xj_block_t *b, const insn_t *in, int n)
@@ -1244,7 +1299,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
     xjb_lit(b, 2, base);
     xjb_lit(b, 3, (uint32_t)(uintptr_t)H.cycles);
     chain_label = xjb_here(b);
-    xj_l32i(e, 6, 3, 0);
+    ld32(e, 6, 3, 0);
     xjb_imm(b, 5, in[0].pc);
     for (int k = 0; k < n; k++)
     {
@@ -1254,6 +1309,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         nat_t nat;
         int cost = seg_cost(i);
         cur_live = live_after[k];
+        int p0 = e->pos, kind = K_CALL;
 
         if (cost >= 0 && !in_seg)
         {
@@ -1271,7 +1327,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         if (cost < 0)
         {
             in_seg = false;
-            xj_s32i(e, 6, 3, 0);                            /* cycles to memory before calling out */
+            st32(e, 6, 3, 0);                            /* cycles to memory before calling out */
         }
 
         if (cost >= 0 && classify(i, &nat) && (nat.kind == N_BCC || nat.kind == N_DBCC))
@@ -1287,7 +1343,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 xjb_bind(b, taken);
                 emit_taken(b, i->pc, nat.target);
                 cyc_sub(e, i->cyc);
-                xj_s32i(e, 6, 3, 0);
+                st32(e, 6, 3, 0);
                 emit_chain(b);
             }
             else if (nat.cc == 0)                           /* DBT: plain fall through */
@@ -1298,8 +1354,8 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 if (nat.cc != 1) { emit_cond(b, nat.cc, fall); }   /* the condition holds -> fall through */
                 xjb_bind(b, dec);
                 /* Dn.w -= 1; taken unless it became 0xFFFF */
-                xj_l32i(e, 8, 2, o_r(nat.dst));
-                xj_addi(e, 8, 8, -1);
+                ld32(e, 8, 2, o_r(nat.dst));
+                addi32(e, 8, 8, -1);
                 xj_s16i(e, 8, 2, o_r(nat.dst));
                 xj_extui(e, 8, 8, 0, 16);
                 xjb_imm(b, 9, 0xFFFF);
@@ -1308,7 +1364,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
                 bool plain = nat.cc == 1 && H.dbf_plain;
                 emit_taken(b, i->pc, nat.target);
                 cyc_sub(e, i->cyc + (plain ? 0 : H.cyc_dbcc_f_noexp));
-                xj_s32i(e, 6, 3, 0);
+                st32(e, 6, 3, 0);
                 emit_chain(b);
                 xjb_bind(b, expired);
                 cyc_sub(e, i->cyc + (plain ? 0 : H.cyc_dbcc_f_exp));
@@ -1319,11 +1375,13 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
             xjb_bind(b, go);
             if (last)
             {
-                xj_addi(e, 7, 5, len);
-                xj_s32i(e, 7, 2, o_pc);
+                addi32(e, 7, 5, len);
+                st32(e, 7, 2, o_pc);
+                ACCOUNT(K_BRANCH);
                 break;
             }
-            xj_addi(e, 5, 5, len);
+            addi32(e, 5, 5, len);
+            ACCOUNT(K_BRANCH);
             continue;
         }
         if (cost >= 0 && classify(i, &nat))
@@ -1333,11 +1391,13 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
             cyc_sub(e, cost);
             if (last)
             {
-                xj_addi(e, 7, 5, len);
-                xj_s32i(e, 7, 2, o_pc);
+                addi32(e, 7, 5, len);
+                st32(e, 7, 2, o_pc);
+                ACCOUNT(K_REG);
                 break;
             }
-            xj_addi(e, 5, 5, len);
+            addi32(e, 5, 5, len);
+            ACCOUNT(K_REG);
             continue;
         }
         if (classify(i, &nat) && nat.kind >= N_JSR)
@@ -1346,6 +1406,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
             m68kjit_stats.native++;
             emit_mem(b, i, &nat);
             emit_cycles(e, i->cyc);
+            ACCOUNT(K_MEM);
             break;
         }
         if (classify(i, &nat) && nat.kind >= N_MEM)
@@ -1356,22 +1417,26 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
             n_extra = 0;
             emit_mem(b, i, &nat);
             emit_cycles(e, i->cyc + n_extra);
+            kind = K_MEM;
         }
         else
         {
-            xj_s32i(e, 5, 2, o_ppc);
-            xj_addi(e, 7, 5, 2);
-            xj_s32i(e, 7, 2, o_pc);
+            st32(e, 5, 2, o_ppc);
+            addi32(e, 7, 5, 2);
+            st32(e, 7, 2, o_pc);
             xjb_imm(b, 7, i->op);
-            xj_s32i(e, 7, 2, o_ir);
+            st32(e, 7, 2, o_ir);
             xjb_lit(b, 8, (uint32_t)(uintptr_t)i->handler);
             xj_callx8(e, 8);
             emit_cycles(e, i->cyc);
         }
         if (last)
+        {
+            ACCOUNT(kind);
             break;                          /* the last one leaves anyway */
-        xj_l32i(e, 7, 2, o_pc);
-        xj_addi(e, 5, 5, len);
+        }
+        ld32(e, 7, 2, o_pc);
+        addi32(e, 5, 5, len);
         int same = xjb_label(b);
         xjb_b8(b, xj_beq, 7, 5, same);
         xj_retw_n(e);
@@ -1380,10 +1445,11 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
         xjb_bi(b, xj_bgei, 6, 1, more);
         xj_retw_n(e);
         xjb_bind(b, more);
+        ACCOUNT(kind);
     }
     /* the end: cycles to memory; chain to the fall-through, or to the target of
      * a BRA/BSR, when PC is that address (a handler may have taken an exception) */
-    xj_s32i(e, 6, 3, 0);
+    st32(e, 6, 3, 0);
     const insn_t *l = &in[n - 1];
     uint16_t lop = l->op;
     uint32_t to = l->next;
@@ -1396,7 +1462,7 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
     if (known)
     {
         int ret = xjb_label(b);
-        xj_l32i(e, 7, 2, o_pc);
+        ld32(e, 7, 2, o_pc);
         xjb_imm(b, 8, to);
         xjb_b8(b, xj_bne, 7, 8, ret);
         emit_chain(b);
@@ -1405,11 +1471,11 @@ static void emit_block(xj_block_t *b, const insn_t *in, int n)
     xj_retw_n(e);
     /* slow: not enough cycles for a segment; the dispatcher steps from a5 */
     xjb_bind(b, slow);
-    xj_s32i(e, 5, 2, o_pc);
-    xj_s32i(e, 6, 3, 0);
+    st32(e, 5, 2, o_pc);
+    st32(e, 6, 3, 0);
     xjb_lit(b, 8, (uint32_t)(uintptr_t)&force_step);
-    xj_movi(e, 9, 1);
-    xj_s32i(e, 9, 8, 0);
+    movi32(e, 9, 1);
+    st32(e, 9, 8, 0);
     xj_retw_n(e);
 }
 

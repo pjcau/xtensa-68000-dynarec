@@ -141,8 +141,8 @@ Metal Slug 2 close to 60 fps.
 
 | Step | Status | Result |
 |---|---|---|
-| F0 measure | planned | |
-| F1 16-bit forms | planned | |
+| F0 measure | done on the QEMU fuzz (2026-10-02), board pending | `m68kjit_stats` counts Xtensa bytes per kind of 68000 instruction and the flag code; printed by the fuzz (`M68K BYTES/INSN`) and by mame-go's `M68KJIT` report. Fuzz ROMs, 24-bit forms: register-only 32.7 bytes, memory 100.7, handler call 46.9, branch 51.5; flag code 8 % (F5 not needed by the plan's 15 % rule, on these ROMs). |
+| F1 16-bit forms | done (2026-10-02) | `ld32/st32/mov32/addi32/movi32` pick the density form when the operand allows (`-DM68KJIT_WIDE` restores the 24-bit forms). Fuzz ROMs: 29.8 / 90.0 / 42.1 / 48.4 bytes, about 10 % less (not the 20-25 % hoped: most of a memory instruction is not loads and stores). QEMU: 0 mismatches on every pass. Board timing pending. |
 | F2 IRQs between instructions | planned | |
 | F3 direct ROM/RAM access | planned (with 9d-1) | |
 | F4 pinned registers | planned | |
