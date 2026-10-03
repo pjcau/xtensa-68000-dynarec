@@ -77,15 +77,14 @@ repository): wait loops are recognised and skipped exactly, after being proven
 I/O reads repeat). 55.7 % of Metal Slug's executed cycles in play were one
 vblank wait loop.
 
-| Game, scripted benchmark | 68000 ms per frame before | after |
+| Game, scripted benchmark, in play | 68000 ms per frame before | after |
 |---|---|---|
-| Metal Slug, mission 1 being played | 10.8 | 7.0 |
-| Final Fight, intro story | 7.4 | 2.7 |
-| Street Fighter II CE, title screen | 8.3 | 3.6 |
+| Metal Slug | 10.8 | 7.0 |
+| Final Fight | 9.7 | 6.8 |
+| Street Fighter II CE | 9.8 | 6.1 |
 
-The two CPS1 rows are not play: the script's presses were too short for the
-CPS1 and the games stayed on their intro and title, where a game mostly waits
-and the skip gains most. Their play figures are measured with a longer script.
+(On screens where a game mostly waits the gain is larger: Final Fight's intro
+story went from 7.4 to 2.7 ms.)
 
 Pictures and sound samples are identical frame by frame on the PC harness. The
 details and the remaining frame budget are in the handheld's documentation:
