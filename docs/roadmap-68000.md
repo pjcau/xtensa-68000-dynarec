@@ -1,8 +1,7 @@
 # 68000 roadmap
 
 The 68000 frontend on `xjit` for the Neo Geo, CPS1 (mame-go) and Mega Drive
-(gwenesis) emulators of esp32-emu-turbo. Those games run at 40-60 fps on the
-interpreter today, and there the CPU is most of the cost. How the frontend works:
+(gwenesis) emulators of esp32-emu-turbo. How the frontend works:
 [68000 frontend](m68k.md).
 
 ## Rules (same as the GBA)
@@ -27,10 +26,16 @@ interpreter today, and there the CPU is most of the cost. How the frontend works
 | 8f | Indexed modes, PEA/JSR/BSR/RTS, shifts, MOVEM | QEMU | done |
 | 8g | Block chaining | QEMU | done |
 | 9a | Glue for mame-go's Musashi 3.1; the fuzz against it (PC and QEMU, idle-loop skip included) | PC + QEMU | done |
-| 9b | mame-go behind `M68KJIT`: fixed-ROM ranges from the 68000's read map, partition room | board at the end | in progress |
-| 9c-9g | Board correctness (same frame hashes), speed, fallback and speed guard, compatibility with the webcam, docs | board | |
-| 9f | Compact code generation, F0-F6: 16-bit forms, IRQs between instructions, direct ROM/RAM access, pinned registers ([plan](codegen-plan.md)) | QEMU + board | planned |
-| 10 | gwenesis (Mega Drive), if it helps there (the VDP is its main cost) | board | |
+| 9b | mame-go behind `M68KJIT`: fixed-ROM ranges from the 68000's read map, partition room | board | done |
+| 9c | Board correctness: the interpreter's screen hashes on Metal Slug | board | done (7 of 7) |
+| 9d | Board speed against the interpreter | board | done: **slower** (13.1 ms against 7.7 ms a frame) |
+| 9f | Compact code generation, F0-F6 ([plan](codegen-plan.md)) | QEMU + board | F0-F2 done, F3-F6 on hold |
+| 9e, 9g | Fallback and speed guard per game, compatibility runs | board | not started: nothing to guard while the dynarec is off |
+| 10 | gwenesis (Mega Drive) | board | not started |
+
+**On hold since 2026-10-03.** The dynarec is exact and slower than the
+interpreter on the board; the reasons, the numbers and what would reopen it are
+in [68000 in mame-go](mame.md).
 
 Lessons from the GBA that apply: hot C helpers in IRAM, core-1 work out of core
 0's way, the internal RAM budget, the translated code running from PSRAM through
