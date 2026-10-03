@@ -2658,9 +2658,16 @@ static s32 load_gamepak_raw(const char *name)
     for (i = 0; i < ldblks; i++)
     {
       // Load 1MB chunk and map it
-      fread(gamepak_buffers[i], gamepak_buffer_blocksize, 1, gamepak_file_large);
-      if (gamepak_load_progress)
-        gamepak_load_progress((int)((i + 1) * 100 / ldblks));
+      {
+        /* a quarter of the block at a time, so that a loading display moves evenly */
+        u32 q, quarter = gamepak_buffer_blocksize / 4;
+        for (q = 0; q < 4; q++)
+        {
+          fread(gamepak_buffers[i] + q * quarter, quarter, 1, gamepak_file_large);
+          if (gamepak_load_progress)
+            gamepak_load_progress((int)((i * 4 + q + 1) * 100 / (ldblks * 4)));
+        }
+      }
       for (j = 0; j < 32 && i*32 + j < rom_blocks; j++)
       {
         u32 phyn = i*32 + j;
