@@ -2630,6 +2630,9 @@ unsigned memory_write_savestate(u8 *dst)
   return (unsigned int)(dst - startp);
 }
 
+/* set by the front end: the share of the ROM read so far, for a loading display */
+void (*gamepak_load_progress)(int percent);
+
 static s32 load_gamepak_raw(const char *name)
 {
   unsigned i, j;
@@ -2656,6 +2659,8 @@ static s32 load_gamepak_raw(const char *name)
     {
       // Load 1MB chunk and map it
       fread(gamepak_buffers[i], gamepak_buffer_blocksize, 1, gamepak_file_large);
+      if (gamepak_load_progress)
+        gamepak_load_progress((int)((i + 1) * 100 / ldblks));
       for (j = 0; j < 32 && i*32 + j < rom_blocks; j++)
       {
         u32 phyn = i*32 + j;
