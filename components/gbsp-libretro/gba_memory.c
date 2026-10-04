@@ -378,6 +378,10 @@ u32 gamepak_sticky_bit[1024/32];
 // pages from, so there's no slowdown with opening and closing the file
 // a lot.
 FILE *gamepak_file_large = NULL;
+/* set by the front end: its own read of ROM data from the file (on the ESP32 a
+   plain fread into PSRAM is one 512-byte sector per SD command); NULL = fread */
+size_t (*gamepak_fread)(void *buffer, size_t length, FILE *fp);
+#define GAMEPAK_FREAD(buf, n, fp) (gamepak_fread ? gamepak_fread((buf), (n), (fp)) : fread((buf), 1, (n), (fp)))
 
 // Writes to these respective locations should trigger an update
 // so the related subsystem may react to it.
@@ -2291,7 +2295,7 @@ u8 *load_gamepak_page(u32 physical_index)
   gamepak_blk_queue[entry].phy_rom = physical_index;
 
   fseek(gamepak_file_large, physical_index * (32 * 1024), SEEK_SET);
-  fread(swap_location, (32 * 1024), 1, gamepak_file_large);
+  GAMEPAK_FREAD(swap_location, (32 * 1024), gamepak_file_large);
 
   // Map it to the read handlers now
   map_rom_entry(read, physical_index, swap_location, gamepak_size >> 15);
@@ -2334,7 +2338,7 @@ void gamepak_return_block(void)
     if (phy < 0)
       continue;
     fseek(gamepak_file_large, phy * (32 * 1024), SEEK_SET);
-    fread(slot, 32 * 1024, 1, gamepak_file_large);
+    GAMEPAK_FREAD(slot, 32 * 1024, gamepak_file_large);
     map_rom_entry(read, phy, slot, gamepak_size >> 15);
     if (phy == 0)
       update_gpio_romregs();
@@ -2663,7 +2667,7 @@ static s32 load_gamepak_raw(const char *name)
         u32 q, quarter = gamepak_buffer_blocksize / 4;
         for (q = 0; q < 4; q++)
         {
-          fread(gamepak_buffers[i] + q * quarter, quarter, 1, gamepak_file_large);
+          GAMEPAK_FREAD(gamepak_buffers[i] + q * quarter, quarter, gamepak_file_large);
           if (gamepak_load_progress)
             gamepak_load_progress((int)((i * 4 + q + 1) * 100 / (ldblks * 4)));
         }
