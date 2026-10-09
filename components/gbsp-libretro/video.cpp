@@ -117,6 +117,15 @@ static s32 r_affine_x[2], r_affine_y[2];
 #define render_oam oam_ram
 static u16 r_basepal[256];   /* never used: no snapshot to build it from */
 #endif
+#ifdef GBAPROF
+/* how often each tile-row path is taken, read by the app's GBAROWS line:
+   0 bottom layer, 1/2 a layer above it with/without a hole, 3/4 a sprite
+   row with/without one. Two instructions a row, not a pixel. */
+extern "C" { u32 gbaprof_rows[8]; }
+#define GBAPROF_ROW(k) (gbaprof_rows[k]++)
+#else
+#define GBAPROF_ROW(k) ((void)0)
+#endif
 /* true where the bottom-most layer can read every pixel out of r_basepal,
    transparent ones included, instead of testing each one */
 #define BASE_NO_TEST(rdtype, isbase) (GBSP_BASEPAL && (rdtype) == FULLCOLOR && (isbase))
@@ -373,16 +382,25 @@ static inline __attribute__((always_inline)) void render_tile_Nbpp(
       u16 pxflg = px_comb | tilepal;
       const u16 *subpal = &paltbl[tilepal];
       const u16 *basepal = &r_basepal[tilepal];
+#ifdef GBAPROF
+      if (rdtype == FULLCOLOR && BASE_NO_TEST(rdtype, isbase))
+        GBAPROF_ROW(0);
+#endif
       /* esp32-emu-turbo: a row with no transparent pixel covers whatever is
          underneath it, so a layer above the bottom one can be drawn without a
          test per pixel as well. One word tells whether the row has a hole:
          bit 3 of each nibble of the sum is set for each non-zero pixel. */
       if (rdtype == FULLCOLOR && !BASE_NO_TEST(rdtype, isbase) &&
           ((((tilepix & 0x77777777) + 0x77777777) | tilepix) & 0x88888888) == 0x88888888) {
+        GBAPROF_ROW(1);
         for (u32 i = 0; i < 8; i++, dest_ptr++)
           *dest_ptr = subpal[(hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF];
         return;
       }
+#ifdef GBAPROF
+      if (rdtype == FULLCOLOR && !BASE_NO_TEST(rdtype, isbase))
+        GBAPROF_ROW(2);
+#endif
       for (u32 i = 0; i < 8; i++, dest_ptr++) {
         u8 pval = (hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF;
         if (BASE_NO_TEST(rdtype, isbase)) {
@@ -1229,11 +1247,16 @@ static inline __attribute__((always_inline)) void render_obj_tile_Nbpp(u32 px_co
          sprite are rows of that kind. */
       if (rdtype == FULLCOLOR &&
           ((((tilepix & 0x77777777) + 0x77777777) | tilepix) & 0x88888888) == 0x88888888) {
+        GBAPROF_ROW(3);
         const u16 *rowpal = &pal[palette];
         for (u32 i = 0; i < 8; i++, dest_ptr++)
           *dest_ptr = rowpal[(hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF];
         return;
       }
+#ifdef GBAPROF
+      if (rdtype == FULLCOLOR)
+        GBAPROF_ROW(4);
+#endif
       for (u32 i = 0; i < 8; i++, dest_ptr++) {
         u8 pval = (hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF;
         const u16 *subpal = &pal[palette];
