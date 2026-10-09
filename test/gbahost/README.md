@@ -9,8 +9,30 @@ renderer can be weighed and proved before it is flashed.
 The host CPU is not the LX7. What carries over from a measurement here is the
 *work removed* (pixels written, stores issued, instructions in the hot loop)
 and the share one part of a frame takes of the whole; absolute milliseconds do
-not. For the instruction count of a hot loop, compile `video.cpp` with the
-IDF's `xtensa-esp32s3-elf-g++` and count what the loop became.
+not.
+
+**How much the host bench can resolve.** Not much, on the heavy scenes. Adding
+256 bytes of dead code to `video.cpp` — code the renderer never calls — moves
+`mode0-blend` by 10 %, `mode0-4bg` and `mode0-objs` by 6 %: what moved is the
+alignment of the hot loops against the host's caches and branch predictor, not
+the work. Read a host difference under about 10 % on those scenes, or 3 % on
+the light ones, as nothing at all, and check the same way (a dead-code build)
+before believing one. Two further traps the harness has already fallen into:
+the frame hash costs more than drawing a plain layer, so it is kept out of the
+timed loop; and one path too many in `render_tile_Nbpp` pushed clang past its
+inlining threshold and turned it into a call per tile, a 25 % loss that had
+nothing to do with the change (hence the `always_inline`, and `nm build/obj/video.o
+| c++filt | grep render_tile_Nbpp` to check — it should print nothing).
+
+So for a change that trades instructions per pixel, the figure that decides is
+the instruction count on the board's own CPU:
+
+    ./xtcount.sh ../../components/gbsp-libretro/video.cpp
+
+which compiles one gpSP source with the IDF's Xtensa compiler and prints the
+instructions of each function and the total text size. The LX7 issues one
+instruction at a time, in order, with no branch predictor, so a loop that
+executes fewer instructions costs fewer cycles.
 
 ## gbahost — a ROM, frame by frame
 
