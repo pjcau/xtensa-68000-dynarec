@@ -45,7 +45,7 @@ static inline u8 *gbsp_live_vram(void) { return vram; }   /* before vram is rede
    registers and affine references taken at that line's hblank (core 0), so
    it can draw on core 1 while core 0 emulates the following lines. */
 #define RLINE_IO 0x30                 /* DISPCNT .. BLDY (u16 index 0x2A) */
-typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u8 oam, oamb, palb; } rline_t;
+typedef struct { u16 io[RLINE_IO]; s32 ax[2], ay[2]; u32 palseq; u8 oam, oamb, palb; } rline_t;
 /* OAM as the line saw it: core 0 copies OAM into the other of two buffers at
    the first line after a change, so the game can rewrite OAM (in the vblank,
    for the next frame) without waiting for core 1 to draw the last lines */
@@ -66,8 +66,36 @@ static u16 *const live_pal = palette_ram_converted;
 static const u16 *render_pal = palette_ram_converted;
 static u8 r_pal_cur;
 static u32 r_pal_last[R_PAL_N] = {~0U, ~0U, ~0U, ~0U};
+static u32 r_pal_seq = 1;   /* bumped on every copy, so the renderer can tell
+                               a reused buffer's old contents from its new */
 extern "C" { u8 gbsp_pal_dirty = 1; }
 #define palette_ram_converted render_pal
+/* esp32-emu-turbo: the backdrop colour sits in colour 0 of every 4bpp bank of
+   this copy of the BG palette (and in colour 0 of the 8bpp palette, which is
+   the same entry). The bottom-most layer shows the backdrop wherever its own
+   pixel is transparent, so with this table it needs no test per pixel: one
+   lookup gives the right colour either way. Rebuilt when the palette the line
+   was emulated with is not the one the table was built from. */
+#define GBSP_BASEPAL 1
+static u16 r_basepal[256];
+static const u16 *r_basepal_src;
+static u32 r_basepal_seq;
+static u32 r_line_palseq;   /* the palette copy the line being drawn belongs to */
+static void base_palette_build(const u16 *pal)
+{
+  memcpy(r_basepal, pal, sizeof(r_basepal));
+  for (u32 bank = 0; bank < 256; bank += 16)
+    r_basepal[bank] = pal[0];
+  r_basepal_src = pal;
+  r_basepal_seq = r_line_palseq;
+}
+/* Called by the only renderer that reads the table, so a game that rewrites
+   the palette on every line pays the rebuild only where it saves something. */
+static inline void base_palette_check(const u16 *pal)
+{
+  if (r_basepal_src != pal || r_basepal_seq != r_line_palseq)
+    base_palette_build(pal);
+}
 #ifdef ESP_PLATFORM
 static rline_t *rlines;   /* 160 lines, PSRAM (internal RAM is full): gbsp_render_start() */
 #else
@@ -87,6 +115,13 @@ static s32 r_affine_x[2], r_affine_y[2];
 #define r_affine_x affine_reference_x
 #define r_affine_y affine_reference_y
 #define render_oam oam_ram
+static u16 r_basepal[256];   /* never used: no snapshot to build it from */
+#endif
+/* true where the bottom-most layer can read every pixel out of r_basepal,
+   transparent ones included, instead of testing each one */
+#define BASE_NO_TEST(rdtype, isbase) (GBSP_BASEPAL && (rdtype) == FULLCOLOR && (isbase))
+#ifndef GBSP_BASEPAL
+#define GBSP_BASEPAL 0
 #endif
 #define get_screen_pitch()    GBA_SCREEN_PITCH
 
@@ -234,7 +269,10 @@ static inline void rend_part_tile_Nbpp(u32 bg_comb, u32 px_comb,
       u32 sel = hflip ? (7-i) : i;
       u8 pval = tile_ptr[sel];
       // Alhpa mode stacks previous value (unless rendering the first layer)
-      if (pval) {
+      if (BASE_NO_TEST(rdtype, isbase)) {
+        *dest_ptr = paltbl[pval];   /* colour 0 of the 8bpp palette is the backdrop */
+      }
+      else if (pval) {
         if (rdtype == FULLCOLOR)
           *dest_ptr = paltbl[pval];
         else if (rdtype == INDXCOLOR)
@@ -260,9 +298,13 @@ static inline void rend_part_tile_Nbpp(u32 bg_comb, u32 px_comb,
     if (hflip) tilepix <<= (start * 4);
     else       tilepix >>= (start * 4);
     // Only 32 bits (8 pixels * 4 bits)
+    const u16 *basepal = &r_basepal[tilepal];
     for (u32 i = start; i < end; i++, dest_ptr++) {
       u8 pval = hflip ? tilepix >> 28 : tilepix & 0xF;
-      if (pval) {
+      if (BASE_NO_TEST(rdtype, isbase)) {
+        *dest_ptr = basepal[pval];
+      }
+      else if (pval) {
         if (rdtype == FULLCOLOR)
           *dest_ptr = subpal[pval];
         else if (rdtype == INDXCOLOR)
@@ -301,7 +343,10 @@ static inline void render_tile_Nbpp(
       if (tilepix) {
         for (u32 i = 0; i < 4; i++, dest_ptr++) {
           u8 pval = hflip ? (tilepix >> (24 - i*8)) : (tilepix >> (i*8));
-          if (pval) {
+          if (BASE_NO_TEST(rdtype, isbase)) {
+            *dest_ptr = paltbl[pval];   /* colour 0 of the 8bpp palette is the backdrop */
+          }
+          else if (pval) {
             if (rdtype == FULLCOLOR)
               *dest_ptr = paltbl[pval];
             else if (rdtype == INDXCOLOR)
@@ -325,9 +370,13 @@ static inline void render_tile_Nbpp(
       u16 tilepal = (tile >> 12) << 4;
       u16 pxflg = px_comb | tilepal;
       const u16 *subpal = &paltbl[tilepal];
+      const u16 *basepal = &r_basepal[tilepal];
       for (u32 i = 0; i < 8; i++, dest_ptr++) {
         u8 pval = (hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF;
-        if (pval) {
+        if (BASE_NO_TEST(rdtype, isbase)) {
+          *dest_ptr = basepal[pval];
+        }
+        else if (pval) {
           if (rdtype == FULLCOLOR)
             *dest_ptr = subpal[pval];
           else if (rdtype == INDXCOLOR)
@@ -352,6 +401,8 @@ template<typename stype, rendtype rdtype, bool isbase, bool is8bpp>
 static inline __attribute__((always_inline)) void render_scanline_text_fast(u32 layer,
  u32 start, u32 end, void *scanline, const u16 * paltbl)
 {
+  if (BASE_NO_TEST(rdtype, isbase) && !is8bpp)
+    base_palette_check(paltbl);
   u32 bg_control = read_ioreg(REG_BGxCNT(layer));
   u16 vcount = read_ioreg(REG_VCOUNT);
   u32 map_size = (bg_control >> 14) & 0x03;
@@ -491,6 +542,8 @@ template<typename stype, rendtype rdtype, bool isbase, bool is8bpp>
 static void render_scanline_text_mosaic(u32 layer,
  u32 start, u32 end, void *scanline, const u16 * paltbl)
 {
+  if (BASE_NO_TEST(rdtype, isbase) && !is8bpp)
+    base_palette_check(paltbl);
   u32 bg_control = read_ioreg(REG_BGxCNT(layer));
   const u32 mosh = (read_ioreg(REG_MOSAIC) & 0xF) + 1;
   const u32 mosv = ((read_ioreg(REG_MOSAIC) >> 4) & 0xF) + 1;
@@ -682,7 +735,10 @@ static inline void rend_pix_8bpp(
   dsttype *dest_ptr, u8 pval, u32 bg_comb, u32 px_comb, const u16 *pal
 ) {
   // Alhpa mode stacks previous value (unless rendering the first layer)
-  if (pval) {
+  if (BASE_NO_TEST(rdtype, isbase)) {
+    *dest_ptr = pal[pval];   /* colour 0 of the 8bpp palette is the backdrop */
+  }
+  else if (pval) {
     if (rdtype == FULLCOLOR)
       *dest_ptr = pal[pval];
     else if (rdtype == INDXCOLOR)
@@ -2389,6 +2445,7 @@ static void render_line(u32 vcount, const rline_t *ls)
   render_io = ls->io;
   render_oam = r_oam[ls->oamb];
   render_pal = r_pal[ls->palb];
+  r_line_palseq = ls->palseq;
   r_affine_x[0] = ls->ax[0]; r_affine_x[1] = ls->ax[1];
   r_affine_y[0] = ls->ay[0]; r_affine_y[1] = ls->ay[1];
   u16 dispcnt = read_ioreg(REG_DISPCNT);
@@ -2667,9 +2724,11 @@ XT_HOT void update_scanline(void)
     }
     memcpy(r_pal[nb], live_pal, 512 * sizeof(u16));
     r_pal_cur = nb;
+    r_pal_seq++;
     gbsp_pal_dirty = 0;
   }
   ls->palb = r_pal_cur;
+  ls->palseq = r_pal_seq;
   r_pal_last[r_pal_cur] = gbsp_rq;
   r_oam_last[r_oam_cur] = gbsp_rq;   /* this line's queue index */
   reg[OAM_UPDATED] = 0;
