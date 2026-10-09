@@ -24,8 +24,27 @@ inlining threshold and turned it into a call per tile, a 25 % loss that had
 nothing to do with the change (hence the `always_inline`, and `nm build/obj/video.o
 | c++filt | grep render_tile_Nbpp` to check — it should print nothing).
 
-So for a change that trades instructions per pixel, the figure that decides is
-the instruction count on the board's own CPU:
+**And the instruction count did not predict the board either.** On 2026-10-09
+three renderer changes that each removed instructions from the innermost pixel
+loop — 7 a pixel down to 4, 56 a tile row down to 37, proven by `xtcount.sh`,
+with identical frames and audio — were measured on the board and made the
+renderer *slower* on all three games: `render` per drawn frame +0.37 ms on
+Mario Kart, +0.27 on Sonic Advance, +0.13 on Metal Slug Advance, above the
+baseline in every one of 20 seconds, on every game. The `GBAROWS` counters
+showed the new path was being taken on 65-98 % of the rows it was written for,
+so it fired as intended and still lost. All three were dropped (fork branch
+`gba-speed`, kept as a record, never merged).
+
+What that means for anyone measuring here: on this chip the instruction count
+of a hot loop is *not* the cost model. An extra test per row plus a second
+copy of the loop costs more in instruction-cache and branch behaviour than the
+per-pixel test it removes, and nothing available on this machine predicts that.
+A host figure is noise; an instruction count is necessary but not sufficient.
+**Only the board decides a renderer change.** Use `xtcount.sh` to know what a
+change does to the work, and the board to know whether it helps.
+
+So for a change that trades instructions per pixel, the count below is
+necessary evidence but not sufficient:
 
     ./xtcount.sh ../../components/gbsp-libretro/video.cpp
 
