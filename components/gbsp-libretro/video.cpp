@@ -1188,8 +1188,9 @@ static inline void render_obj_part_tile_Nbpp(
 }
 
 // Same as above but optimized for full tiles
+/* always_inline for the same reason as render_tile_Nbpp above */
 template<typename dsttype, rendtype rdtype, bool is8bpp, bool hflip>
-static inline void render_obj_tile_Nbpp(u32 px_comb,
+static inline __attribute__((always_inline)) void render_obj_tile_Nbpp(u32 px_comb,
   dsttype *dest_ptr, u32 tile_offset, u16 palette, const u16 *pal
 ) {
   const u8* tile_ptr = &vram[0x10000 + (tile_offset & 0x7FFF)];
@@ -1222,6 +1223,17 @@ static inline void render_obj_tile_Nbpp(u32 px_comb,
   } else {
     u32 tilepix = eswap32(*(u32*)tile_ptr);
     if (tilepix) {   // Can skip all pixels if the row is just transparent
+      /* esp32-emu-turbo: a row with no transparent pixel hides whatever is
+         underneath it, so it needs no test per pixel — one compare on the
+         whole row decides (see render_tile_Nbpp). The interior tiles of a
+         sprite are rows of that kind. */
+      if (rdtype == FULLCOLOR &&
+          ((((tilepix & 0x77777777) + 0x77777777) | tilepix) & 0x88888888) == 0x88888888) {
+        const u16 *rowpal = &pal[palette];
+        for (u32 i = 0; i < 8; i++, dest_ptr++)
+          *dest_ptr = rowpal[(hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF];
+        return;
+      }
       for (u32 i = 0; i < 8; i++, dest_ptr++) {
         u8 pval = (hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF;
         const u16 *subpal = &pal[palette];
