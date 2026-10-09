@@ -326,8 +326,10 @@ static inline void rend_part_tile_Nbpp(u32 bg_comb, u32 px_comb,
 }
 
 // Same as above, but optimized for full tiles. Skip comments here.
+/* always_inline: it is the innermost writer of the whole renderer, and one
+   path more than the compiler's threshold turns it into a call per tile */
 template<typename dtype, rendtype rdtype, bool is8bpp, bool isbase, bool hflip>
-static inline void render_tile_Nbpp(
+static inline __attribute__((always_inline)) void render_tile_Nbpp(
   u32 bg_comb, u32 px_comb, dtype *dest_ptr, u16 tile,
   const u8 *tile_base, int vertical_pixel_flip, const u16 *paltbl
 ) {
@@ -371,6 +373,16 @@ static inline void render_tile_Nbpp(
       u16 pxflg = px_comb | tilepal;
       const u16 *subpal = &paltbl[tilepal];
       const u16 *basepal = &r_basepal[tilepal];
+      /* esp32-emu-turbo: a row with no transparent pixel covers whatever is
+         underneath it, so a layer above the bottom one can be drawn without a
+         test per pixel as well. One word tells whether the row has a hole:
+         bit 3 of each nibble of the sum is set for each non-zero pixel. */
+      if (rdtype == FULLCOLOR && !BASE_NO_TEST(rdtype, isbase) &&
+          ((((tilepix & 0x77777777) + 0x77777777) | tilepix) & 0x88888888) == 0x88888888) {
+        for (u32 i = 0; i < 8; i++, dest_ptr++)
+          *dest_ptr = subpal[(hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF];
+        return;
+      }
       for (u32 i = 0; i < 8; i++, dest_ptr++) {
         u8 pval = (hflip ? (tilepix >> ((7-i)*4)) : (tilepix >> (i*4))) & 0xF;
         if (BASE_NO_TEST(rdtype, isbase)) {
