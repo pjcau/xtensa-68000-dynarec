@@ -14,6 +14,23 @@
      NODRAW=1           emulate without drawing (the CPU side alone)
      TRACE=1            per-frame video and audio hash
      REPEAT=n           run the frame loop n times (warm, for stable timings)
+     IDLEPC=<hex>       the game's idle loop (gba_over.h's idle_loop_target_pc)
+     PCHIST=n           the n hottest guest PCs; needs DEFS=-DPCHIST=1
+
+   Finding a game's idle loop, which is the one lever that removes guest work
+   outright and so does not depend on the host:
+
+     DEFS=-DPCHIST=1 ./build.sh
+     LOADFILE=g.state INPUT=0-99999:256 PCHIST=30 ./build/gbahost g.gba 600
+     #   the hottest PC with a tight backward branch above it and no store in
+     #   the loop is the wait for VBlank
+     IDLEPC=0x800096c LOADFILE=g.state INPUT=0-99999:256 ./build/gbahost g.gba 600
+     #   the hashes must not move and instr/frame must fall; that drop is the
+     #   guest work the board stops emulating
+
+   The interpreter runs here, not the dynarec, and that is what makes the PC
+   histogram right: gpSP gives the guest its 280896 cycles a frame either way,
+   so the instructions a frame executes are the same with both engines.
 */
 #include "common.h"
 #include "memmap.h"
@@ -44,6 +61,11 @@ void gbsp_display_poll(void) {}
 #ifdef GBAPROF
 u32 gbaprof_pageloads;   /* ROM pages the front end faulted in (the board counts them) */
 extern int64_t gbaprof_render_us;
+extern u32 gbaprof_instr;   /* guest instructions the interpreter retired */
+#endif
+#ifdef PCHIST
+void pchist_dump(int top);    /* cpu.cpp: the hottest guest PCs */
+void pchist_frame(void);
 #endif
 
 static unsigned keys;
@@ -88,6 +110,8 @@ int main(int c, char **v)
   memset(gamepak_backup, 0xff, sizeof(gamepak_backup));
   if (load_gamepak(NULL, v[1], FEAT_DISABLE, FEAT_DISABLE, SERIAL_MODE_DISABLED) != 0) { puts("load failed"); return 1; }
   reset_gba();
+  if (getenv("IDLEPC"))
+    idle_loop_target_pc = (u32)strtoul(getenv("IDLEPC"), NULL, 0);
   u8 *state0 = NULL;
   if (getenv("LOADFILE")) {
     FILE *fp = fopen(getenv("LOADFILE"), "rb");
@@ -101,13 +125,13 @@ int main(int c, char **v)
   int dumpat = getenv("DUMPAT") ? atoi(getenv("DUMPAT")) : -1;
   int saveat = getenv("SAVEAT") ? atoi(getenv("SAVEAT")) : -1;
   uint32_t acc = 0, ahash = 0;
-  int64_t best_total = 0, best_exec = 0, best_snd = 0, best_rend = 0;
+  int64_t best_total = 0, best_exec = 0, best_snd = 0, best_rend = 0, best_instr = 0;
 
   if (getenv("PROF")) prof_start();
   for (int r = 0; r < repeat; r++) {
     if (r && state0) gba_load_state(state0);
     acc = 0; ahash = 2166136261u;
-    int64_t exec_us = 0, snd_us = 0, rend_us = 0;
+    int64_t exec_us = 0, snd_us = 0, rend_us = 0, instr = 0;
     const int64_t t_start = now_us();
     for (int f = 0; f < N; f++) {
       keys = script(f);
@@ -125,6 +149,13 @@ int main(int c, char **v)
       const int64_t t2 = now_us();
       exec_us += t1 - t0;
       snd_us += t2 - t1;
+#ifdef PCHIST
+      pchist_frame();
+#endif
+#ifdef GBAPROF
+      instr += gbaprof_instr;
+      gbaprof_instr = 0;
+#endif
 #ifdef GBAPROF
       rend_us += gbaprof_render_us;
 #endif
@@ -151,10 +182,18 @@ int main(int c, char **v)
     if (!best_total || total < best_total) {
       best_total = total; best_exec = exec_us; best_snd = snd_us; best_rend = rend_us;
     }
+    best_instr = instr;
   }
   printf("GBAHOST frames %d hash %08x audio %08x\n", N, acc, ahash);
   printf("GBAHOST ms/frame total %.3f | exec %.3f (render %.3f inside it) sound %.3f\n",
          best_total / 1000.0 / N, best_exec / 1000.0 / N, best_rend / 1000.0 / N, best_snd / 1000.0 / N);
+#ifdef GBAPROF
+  printf("GBAHOST guest instructions/frame %.0f\n", (double)best_instr / N);
+#endif
+#ifdef PCHIST
+  if (getenv("PCHIST"))
+    pchist_dump(atoi(getenv("PCHIST")));
+#endif
   if (getenv("PROF")) prof_dump();
   return 0;
 }

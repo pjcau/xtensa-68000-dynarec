@@ -1491,24 +1491,70 @@ extern "C" { u32 gbaprof_instr; }
 /* PC harness only: how often each PC executes (finding idle loops) */
 #define PCHIST_SIZE (1 << 16)
 static struct { u32 pc, n; } pchist[PCHIST_SIZE];
+static u32 pchist_dropped, pchist_frames;
 static inline void pchist_add(u32 pc)
 {
   u32 h = (pc * 2654435761u) >> 16;
-  while (pchist[h].n && pchist[h].pc != pc)
-    h = (h + 1) & (PCHIST_SIZE - 1);
-  pchist[h].pc = pc;
-  pchist[h].n++;
+  /* a bounded probe: a full table used to walk it for ever looking for a PC
+     that is not in it */
+  for (int i = 0; i < 16; i++, h = (h + 1) & (PCHIST_SIZE - 1))
+    if (!pchist[h].n || pchist[h].pc == pc)
+    {
+      pchist[h].pc = pc;
+      pchist[h].n++;
+      return;
+    }
+  pchist_dropped++;
 }
+/* one frame's worth, so the hits can be read per frame rather than per run */
+extern "C" void pchist_frame(void) { pchist_frames++; }
 extern "C" void pchist_dump(int top)
 {
   u64 total = 0;
+  double cum = 0;
+  const double f = pchist_frames ? pchist_frames : 1;
   for (int i = 0; i < PCHIST_SIZE; i++) total += pchist[i].n;
+  /* An idle loop shows up as a run of adjacent PCs with the same count: add
+     their shares together, that sum is the guest work an idle_loop_target_pc
+     in gba_over.h would remove. */
+  printf("PCHIST %u frames, %llu instructions (%.0f a frame)%s\n", (unsigned)pchist_frames,
+         (unsigned long long)total, total / f,
+         pchist_dropped ? " -- TABLE FULL, counts are short" : "");
+  if (pchist_dropped)
+    printf("PCHIST dropped %u hits: raise PCHIST_SIZE\n", (unsigned)pchist_dropped);
+  /* The candidate: the hottest PC, plus every PC within 32 bytes of it that
+     runs at least half as often — one short loop. gpSP burns the rest of the
+     frame when the PC the loop branches *back* to is reached, so the entry
+     for gba_over.h is the lowest PC of that run. */
+  {
+    int hot = -1;
+    for (int i = 0; i < PCHIST_SIZE; i++)
+      if (pchist[i].n && (hot < 0 || pchist[i].n > pchist[hot].n)) hot = i;
+    if (hot >= 0) {
+      u32 head = pchist[hot].pc, tail = pchist[hot].pc;
+      u64 loop = 0;
+      int n = 0;
+      for (int i = 0; i < PCHIST_SIZE; i++)
+        if (pchist[i].n >= pchist[hot].n / 2 && pchist[i].pc - (pchist[hot].pc - 32) <= 64) {
+          if (pchist[i].pc < head) head = pchist[i].pc;
+          if (pchist[i].pc > tail) tail = pchist[i].pc;
+          loop += pchist[i].n;
+          n++;
+        }
+      printf("PCHIST candidate idle loop %08x..%08x (%d PCs, %.1f%% of the instructions): "
+             "try IDLEPC=0x%x, and gba_over.h idle_loop_target_pc 0x%x\n",
+             head, tail, n, 100.0 * loop / (total ? total : 1), head, head);
+    }
+  }
   for (int k = 0; k < top; k++) {
     int best = -1;
     for (int i = 0; i < PCHIST_SIZE; i++)
       if (pchist[i].n && (best < 0 || pchist[i].n > pchist[best].n)) best = i;
     if (best < 0) break;
-    printf("PCHIST %08x %10u %5.2f%%\n", pchist[best].pc, pchist[best].n, 100.0 * pchist[best].n / total);
+    const double share = 100.0 * pchist[best].n / (total ? total : 1);
+    cum += share;
+    printf("PCHIST %08x %10u %8.0f/frame %5.2f%% (cum %5.2f%%)\n", pchist[best].pc,
+           pchist[best].n, pchist[best].n / f, share, cum);
     pchist[best].n = 0;
   }
 }
