@@ -2699,6 +2699,50 @@ XT_HOT u8 function_cc *block_lookup_translate_##type(u32 pc)                    
 block_lookup_translate_builder(arm);
 block_lookup_translate_builder(thumb);
 
+#if defined(GBAPROF) && defined(XTENSA_ARCH)
+/* GBAPROF: the host PCs the sampler collects inside the translation cache,
+   named by the guest code they were translated from. Most of core 0 is
+   translated code, and a host address on its own says nothing about which
+   part of the game is hot -- but the ROM cache is self-describing: a
+   hashhdr_type carrying the block's guest PC sits in front of every block, so
+   the block holding a host offset is the one whose start is the greatest at
+   or below it. No side table, and nothing in the hot path.
+
+   One pass answers every address at once, which is what the dump needs: the
+   hash has 65536 heads and walking it once per address would stall the game
+   for seconds. Offsets in the RAM cache (EWRAM/IWRAM code, tagged rather than
+   hashed) are left unnamed; the dump reports their share separately. */
+void xt_name_host_blocks(const u32 *host_off, u32 *guest_pc, u32 *block_off, int n)
+{
+  int i;
+  u32 h;
+
+  for (i = 0; i < n; i++)
+  {
+    guest_pc[i] = ~0u;
+    block_off[i] = 0;
+  }
+
+  for (h = 0; h < ROM_BRANCH_HASH_SIZE; h++)
+  {
+    u32 o = rom_branch_hash[h];
+    while (o)
+    {
+      const hashhdr_type *hdr = (const hashhdr_type *)&rom_translation_cache[o];
+      const u32 start = o + sizeof(hashhdr_type) + block_prologue_size;
+      for (i = 0; i < n; i++)
+        if (host_off[i] < ROM_TRANSLATION_CACHE_SIZE &&
+            start <= host_off[i] && start > block_off[i])
+        {
+          block_off[i] = start;
+          guest_pc[i] = hdr->pc_value;   /* the guest PC, with the thumb bit */
+        }
+      o = hdr->next_entry;
+    }
+  }
+}
+#endif
+
 XT_HOT u8 function_cc *block_lookup_address_dual(u32 pc)
 {
   u32 thumb = pc & 0x01;
