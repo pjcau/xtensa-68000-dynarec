@@ -23,8 +23,21 @@
    "bgez a3, +2; j cold_update; j exit", and the exit j is later patched
    into a direct jump to the next block. The update_gba call and the exit's
    literal/l32r/jx stay out of the instruction cache lines the loop uses. */
+/* "pc" is the branch being translated, "new_pc" where it goes. gba_over.h's
+   idle_loop_target_pc is matched against the branch, as upstream does; a
+   candidate in the interpreter's convention (the PC the loop branches back
+   to, which is what the host harness names) goes in idle_loop_head_pc and is
+   matched against the target instead. See cpu.h. */
+#ifdef GBAPROF
+#define XT_IDLE_LOOP_HIT(new_pc)                                              \
+  (pc == idle_loop_target_pc ||                                               \
+   (idle_loop_head_pc && (new_pc) == idle_loop_head_pc))
+#else
+#define XT_IDLE_LOOP_HIT(new_pc) (pc == idle_loop_target_pc)
+#endif
+
 #define generate_branch_no_cycle_update(writeback_location, new_pc)           \
-  if(pc == idle_loop_target_pc)                                               \
+  if(XT_IDLE_LOOP_HIT(new_pc))                                                \
   {                                                                           \
     XT(movi, reg_cycles, 0);                                                  \
     xt_update_call(new_pc);                                                   \

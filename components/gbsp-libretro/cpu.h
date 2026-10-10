@@ -159,6 +159,17 @@ extern u8 *ram_translation_ptr;
 #define MAX_TRANSLATION_GATES 8
 
 extern u32 idle_loop_target_pc;
+#ifdef GBAPROF
+/* GBAPROF: the same loop in the other convention, for trying a candidate.
+   The interpreter eliminates an idle loop when the PC *lands* on
+   idle_loop_target_pc (cpu.cpp, after the instruction), so a candidate found
+   with the host harness is the PC the loop branches back to; the dynarec
+   eliminates it when the loop's *branch* is at that PC (xtensa_emit_ops.h, at
+   translate time). The two agree only when the loop branches to itself. This
+   holds the branch-target convention and is 0 unless a profiling build was
+   told otherwise, so gba_over.h's entries keep their exact behaviour. */
+extern u32 idle_loop_head_pc;
+#endif
 extern u32 translation_gate_targets;
 extern u32 translation_gate_target_pc[MAX_TRANSLATION_GATES];
 

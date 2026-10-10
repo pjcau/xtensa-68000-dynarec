@@ -2700,6 +2700,10 @@ block_lookup_translate_builder(arm);
 block_lookup_translate_builder(thumb);
 
 #if defined(GBAPROF) && defined(XTENSA_ARCH)
+/* a candidate idle loop in the interpreter's convention (cpu.h): the frontend
+   sets it, generate_branch_no_cycle_update matches it against branch targets */
+u32 idle_loop_head_pc;
+
 /* GBAPROF: the host PCs the sampler collects inside the translation cache,
    named by the guest code they were translated from. Most of core 0 is
    translated code, and a host address on its own says nothing about which
