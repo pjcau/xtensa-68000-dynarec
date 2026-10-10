@@ -43,6 +43,19 @@
 #define XT_HOT
 #endif
 
+/* Core-1 renderer code that core 0 pays for: its flash fetches go through the
+   same SPI0 cache controller as core 0's PSRAM-resident translated code, and
+   with core 1 idle Mario Kart's core-0 frame fell 19.30 -> 13.72 ms on the
+   board (2026-10-10), when 54% of core 1's ticks were flash code. Moving it to
+   IRAM changes no instruction, only an address -- but it spends ~24 KB of the
+   internal RAM every gbsp game shares, so until the board says it pays it is
+   GBAPROF only. Promoting it is one line here. */
+#if defined(XTENSA_ARCH) && defined(ESP_PLATFORM) && defined(GBAPROF)
+#define GBA_C1_HOT IRAM_ATTR
+#else
+#define GBA_C1_HOT
+#endif
+
 /* On x86 we pass arguments via registers instead of stack */
 #ifdef X86_ARCH
   #define function_cc __attribute__((regparm(2)))

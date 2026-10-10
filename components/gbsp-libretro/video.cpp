@@ -719,9 +719,16 @@ typedef void (*affine_render_function) (
 // wrap extends the background infinitely, otherwise transparent/backdrop fill
 // rotate indicates if there's any rotation (optimized version for no-rotation)
 // mosaic applies to horizontal mosaic (vertical is adjusted via affine ref)
+/* Mario Kart's road is one 195-byte instantiation of this, and on the board
+   of 2026-10-10 it was 14.2% of core 1 -- fetched from flash, through the same
+   SPI0 cache controller core 0 fetches its PSRAM-resident translated code
+   through. The instantiations are reached through a function-pointer table, so
+   the whole template goes to IRAM (64 of them, 14.1 KB) rather than being
+   restructured: the attribute moves the code without changing one instruction
+   of it. */
 template <typename dtype, rendtype rdtype,
           bool isbase, bool wrap, bool rotate, bool mosaic>
-static inline void render_affine_background(
+GBA_C1_HOT static void render_affine_background(
   u32 layer, u32 start, u32 cnt, const u8 *map_base,
   u32 map_size, const u8 *tile_base, void *dst_ptr_raw,
   const u16* pal) {
@@ -1600,7 +1607,7 @@ void render_scanline_objs(
 // into a sorted list by priority for the current row.
 // Invisible objects are discarded. ST-objects are flagged. Cycle counting is
 // performed to discard excessive objects (to match HW capabilities).
-static void order_obj(u32 video_mode)
+GBA_C1_HOT static void order_obj(u32 video_mode)   /* 1.6% of core 1, 519 B */
 {
   u32 obj_num;
   u32 row;
@@ -2006,7 +2013,8 @@ void tile_render_layers(u32 start, u32 end, dsttype *dst_ptr, u32 enabled_layers
 // which similarly uses an indexed color for rendering but recording one
 // color for the background and another one for the object layer.
 
-static void render_w_effects(
+/* 12.4% of core 1 on 2026-10-10, 2.2 KB, in flash: IRAM for the same reason */
+GBA_C1_HOT static void render_w_effects(
   u32 start, u32 end, u16* scanline, u32 enable_flags,
   const layer_render_struct *renderers
 ) {
@@ -2460,11 +2468,26 @@ static void render_task(void *arg)
 #define GBSP_RENDER_PRIO 5
 #endif
 /* core 0: start the line renderer on core 1 */
+#ifdef GBAPROF
+extern "C" { extern u32 gbsp_opt_rint; }   /* the frontend's card file */
+#endif
+
 extern "C" void gbsp_render_start(void)
 {
+  /* The per-pixel palette and the OAM copy are 6 KB that core 1 reads over and
+     over. They are small enough to sit in the 64 KB data cache either way, so
+     internal RAM should buy nothing -- rint=1 is there to settle that rather
+     than to assume it. rlines (19 KB) stays in PSRAM: it is read 120 bytes
+     sequentially per line, two cache lines, and the internal RAM it would take
+     is wanted for code. */
+  u32 small_caps = MALLOC_CAP_SPIRAM;
+#ifdef GBAPROF
+  if (gbsp_opt_rint)
+    small_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
   rlines = (rline_t *)heap_caps_malloc(160 * sizeof(rline_t), MALLOC_CAP_SPIRAM);
-  r_oam = (u16 (*)[512])heap_caps_malloc(2 * sizeof(oam_ram), MALLOC_CAP_SPIRAM);
-  r_pal = (u16 (*)[512])heap_caps_malloc(R_PAL_N * 512 * sizeof(u16), MALLOC_CAP_SPIRAM);
+  r_oam = (u16 (*)[512])heap_caps_malloc(2 * sizeof(oam_ram), small_caps);
+  r_pal = (u16 (*)[512])heap_caps_malloc(R_PAL_N * 512 * sizeof(u16), small_caps);
   if (!rlines || !r_oam || !r_pal)
     abort();
   /* above retro-go's display task (6) on core 1, so core 0 rarely waits */
