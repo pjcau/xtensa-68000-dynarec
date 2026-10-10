@@ -32,6 +32,17 @@ cpu_alert_type write_rcnt(u16 value);
 u32 serial_next_event();
 bool update_serial(unsigned cycles);
 
+/* update_gba calls update_serial on every event, and with the port disabled
+   and no pending IRQ the function dispatches a switch and returns false --
+   0.39% of core 0 on the 2026-10-10 Mario Kart profile, for nothing. The two
+   loads that decide it are cheaper than the call, and the condition is exactly
+   the one under which update_serial has no effect. */
+extern u32 serial_irq_cycles;
+static inline bool update_serial_idle(void)
+{
+  return serial_mode == SERIAL_MODE_DISABLED && !serial_irq_cycles;
+}
+
 // RFU interface
 void rfu_reset(void);
 bool rfu_update(unsigned cycles);

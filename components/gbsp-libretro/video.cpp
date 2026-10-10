@@ -2503,8 +2503,26 @@ extern "C" void gbsp_render_sync(void)
 #endif
 }
 
+#ifdef GBAPROF
+extern "C" { extern u32 gbsp_opt_core1_idle; }   /* defined by the frontend */
+#endif
+
 static void line_ready(u32 vcount)
 {
+#ifdef GBAPROF
+  /* What core 1 costs core 0 through the 32 KB instruction cache they share.
+     Mario Kart's hot translated code is ~120 KB behind that cache and core 1
+     streams the affine-road renderer from flash through it at the same time,
+     so core 0's misses are not all its own fault. With this on no line is
+     queued, core 1 is never woken, and core 0 runs exactly the same emulation
+     with the cache to itself: the drop in "cpu" is the contention.
+
+     Nothing is queued, so gbsp_rq never advances and core 0's sync loop
+     (gbsp_rd == gbsp_rq) falls straight through -- it cannot hang. The picture
+     holds the last frame drawn: this is a measurement, not a way to play. */
+  if (gbsp_opt_core1_idle)
+    return;
+#endif
   if (!gbsp_render_core1)
   {
     render_line(vcount, &rlines[vcount]);

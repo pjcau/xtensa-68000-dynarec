@@ -21,7 +21,7 @@
 
 int serial_mode = SERIAL_MODE_AUTO;
 
-static u32 serial_irq_cycles = 0;
+u32 serial_irq_cycles = 0;   /* serial.h: update_serial_idle() reads it */
 
 // Timings are very aproximate, hopefully they are good enough.
 #define CLOCK_CYC_256KHZ_8BIT        524    // CLOCK / 256KHz * 8

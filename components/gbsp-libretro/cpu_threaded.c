@@ -2560,22 +2560,57 @@ inline static ramtag_type* get_ram_tag(u16 tagval) {
    branches: bx lr, pop {pc}) without touching them. Emptied with the ROM
    translation cache. */
 #ifdef XTENSA_ARCH
+#ifdef GBAPROF
+/* GBAPROF: the board run of 2026-10-10 put Mario Kart's hot translated code at
+   roughly 480 blocks a frame (the top 24 of 256-byte buckets held 9.6% of the
+   translated ticks, and the distribution out to rank 24 falls only 87 -> 38).
+   A direct-mapped table of 512 slots holding ~480 live keys conflicts most of
+   the time, which is a candidate for the 0.47 ms the sampler put in the block
+   lookup. The table is allocated large and its live size is a runtime mask, so
+   one flash A/Bs 512 (the play build's size and hash, exactly) against 1024
+   and 2048. */
+#define XT_L1_N 2048
+extern u32 xt_opt_l1_mask;
+extern u32 xt_prof_l1_hit, xt_prof_l1_miss;
+#define XT_L1_MASK xt_opt_l1_mask
+#define XT_L1_COUNT(h) ((h) ? xt_prof_l1_hit++ : xt_prof_l1_miss++)
+#else
 #define XT_L1_N 512
+#define XT_L1_MASK (XT_L1_N - 1)
+#define XT_L1_COUNT(h) ((void)0)
+#endif
 static u32 xt_l1_key[XT_L1_N];
 static u8 *xt_l1_ptr[XT_L1_N];
-#define XT_L1_SLOT(key) (((key) ^ ((key) >> 9)) & (XT_L1_N - 1))
+#define XT_L1_SLOT(key) (((key) ^ ((key) >> 9)) & XT_L1_MASK)
 static void xt_l1_clear(void)
 {
   memset(xt_l1_key, 0xFF, sizeof(xt_l1_key));   /* ~0: never a key (pc | thumb) */
 }
 #define XT_L1_LOOKUP(key)                                                     \
-  { u32 l1_ = XT_L1_SLOT(key);                                                \
-    if (xt_l1_key[l1_] == (key)) return xt_l1_ptr[l1_]; }
+  { u32 l1_ = XT_L1_SLOT(key); u32 hit_ = (xt_l1_key[l1_] == (key));          \
+    XT_L1_COUNT(hit_);                                                        \
+    if (hit_) return xt_l1_ptr[l1_]; }
 #define XT_L1_FILL(key, ptr)                                                  \
   { u32 l1_ = XT_L1_SLOT(key); xt_l1_key[l1_] = (key); xt_l1_ptr[l1_] = (ptr); }
 #else
 #define XT_L1_LOOKUP(key)
 #define XT_L1_FILL(key, ptr)
+#endif
+
+#ifdef GBAPROF
+/* translate_icache_sync does nothing unless a block was just translated, and
+   in steady state (GBAJIT: ~0 translates a second) none is -- but it is called
+   out of line on every block lookup, and the sampler put 0.70% of core 0 in
+   it. With xt_opt_isync the two pointer compares happen at the call site. */
+extern u32 xt_opt_isync;
+#define XT_ICACHE_SYNC()                                                      \
+  do {                                                                        \
+    if (!xt_opt_isync || last_rom_translation_ptr < rom_translation_ptr ||    \
+        last_ram_translation_ptr < ram_translation_ptr)                       \
+      translate_icache_sync();                                                \
+  } while (0)
+#else
+#define XT_ICACHE_SYNC() translate_icache_sync()
 #endif
 
 /* RAM blocks translated in this frame: a game that rewrites its own code
@@ -2704,6 +2739,13 @@ block_lookup_translate_builder(thumb);
    sets it, generate_branch_no_cycle_update matches it against branch targets */
 u32 idle_loop_head_pc;
 
+/* the levers the board switches from the card (the frontend reads
+   /sd/retro-go/config/gbaopt.txt), so that one flash A/Bs each one and every
+   combination. Every default is the play build's behaviour. */
+u32 xt_opt_l1_mask = 511;   /* the play build's L1: 512 slots, same hash */
+u32 xt_opt_isync;
+u32 xt_prof_l1_hit, xt_prof_l1_miss;
+
 /* GBAPROF: the host PCs the sampler collects inside the translation cache,
    named by the guest code they were translated from. Most of core 0 is
    translated code, and a host address on its own says nothing about which
@@ -2767,7 +2809,7 @@ XT_HOT u8 function_cc *block_lookup_address_arm(u32 pc)
   for (i = 0; i < 4; i++) {
     u8 *ret = block_lookup_translate_arm(pc);
     if (ret) {
-      translate_icache_sync();
+      XT_ICACHE_SYNC();
       return ret;
     }
   }
@@ -2783,7 +2825,7 @@ XT_HOT u8 function_cc *block_lookup_address_thumb(u32 pc)
   for (i = 0; i < 4; i++) {
     u8 *ret = block_lookup_translate_thumb(pc);
     if (ret) {
-      translate_icache_sync();
+      XT_ICACHE_SYNC();
       return ret;
     }
   }
