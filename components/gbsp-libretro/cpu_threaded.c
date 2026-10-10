@@ -2560,22 +2560,19 @@ inline static ramtag_type* get_ram_tag(u16 tagval) {
    branches: bx lr, pop {pc}) without touching them. Emptied with the ROM
    translation cache. */
 #ifdef XTENSA_ARCH
-#ifdef GBAPROF
-/* GBAPROF: the board run of 2026-10-10 put Mario Kart's hot translated code at
-   roughly 480 blocks a frame (the top 24 of 256-byte buckets held 9.6% of the
-   translated ticks, and the distribution out to rank 24 falls only 87 -> 38).
-   A direct-mapped table of 512 slots holding ~480 live keys conflicts most of
-   the time, which is a candidate for the 0.47 ms the sampler put in the block
-   lookup. The table is allocated large and its live size is a runtime mask, so
-   one flash A/Bs 512 (the play build's size and hash, exactly) against 1024
-   and 2048. */
+/* Mario Kart's hot translated code is roughly 480 blocks a frame (board,
+   2026-10-10), and 512 direct-mapped slots holding ~480 live keys conflict
+   most of the time. 2048 slots took the miss rate from 15.3% to 4.6% and,
+   with the cache-sync pre-check below, 0.15-0.17 ms off the frame. It costs
+   12 KB of internal RAM over the 512-slot table. In a GBAPROF build the live
+   size is a runtime mask, so the A/B stays available. */
 #define XT_L1_N 2048
+#ifdef GBAPROF
 extern u32 xt_opt_l1_mask;
 extern u32 xt_prof_l1_hit, xt_prof_l1_miss;
 #define XT_L1_MASK xt_opt_l1_mask
 #define XT_L1_COUNT(h) ((h) ? xt_prof_l1_hit++ : xt_prof_l1_miss++)
 #else
-#define XT_L1_N 512
 #define XT_L1_MASK (XT_L1_N - 1)
 #define XT_L1_COUNT(h) ((void)0)
 #endif
@@ -2597,21 +2594,17 @@ static void xt_l1_clear(void)
 #define XT_L1_FILL(key, ptr)
 #endif
 
-#ifdef GBAPROF
 /* translate_icache_sync does nothing unless a block was just translated, and
-   in steady state (GBAJIT: ~0 translates a second) none is -- but it is called
-   out of line on every block lookup, and the sampler put 0.70% of core 0 in
-   it. With xt_opt_isync the two pointer compares happen at the call site. */
-extern u32 xt_opt_isync;
+   in steady state (GBAJIT: ~0 translates a second) none is -- but it was
+   called out of line on every block lookup, and the sampler put 0.70% of
+   core 0 in it. The two pointer compares happen at the call site instead;
+   measured with the bigger L1 above, 0.15-0.17 ms. */
 #define XT_ICACHE_SYNC()                                                      \
   do {                                                                        \
-    if (!xt_opt_isync || last_rom_translation_ptr < rom_translation_ptr ||    \
+    if (last_rom_translation_ptr < rom_translation_ptr ||                     \
         last_ram_translation_ptr < ram_translation_ptr)                       \
       translate_icache_sync();                                                \
   } while (0)
-#else
-#define XT_ICACHE_SYNC() translate_icache_sync()
-#endif
 
 /* RAM blocks translated in this frame: a game that rewrites its own code
    in a loop (NFS Underground: ~3000 per frame) is better off interpreted
@@ -2742,8 +2735,7 @@ u32 idle_loop_head_pc;
 /* the levers the board switches from the card (the frontend reads
    /sd/retro-go/config/gbaopt.txt), so that one flash A/Bs each one and every
    combination. Every default is the play build's behaviour. */
-u32 xt_opt_l1_mask = 511;   /* the play build's L1: 512 slots, same hash */
-u32 xt_opt_isync;
+u32 xt_opt_l1_mask = XT_L1_N - 1;   /* the card can shrink it to A/B the size */
 u32 xt_prof_l1_hit, xt_prof_l1_miss;
 
 /* GBAPROF: the host PCs the sampler collects inside the translation cache,
